@@ -100,6 +100,100 @@ def clean_related_files(cfg, logger):
                 if os.path.isdir(folder_path):
                     shutil.rmtree(folder_path)
 
+
+def _to_rollout_record_value(value):
+    if torch.is_tensor(value):
+        return value.detach().cpu().numpy()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {k: _to_rollout_record_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_rollout_record_value(v) for v in value]
+    return value
+
+
+def save_rollout_record(
+    cfg,
+    logger,
+    result,
+    plan_result,
+    plan_idx,
+    current_queue,
+    ann_file,
+    prefix,
+    step,
+    value=None,
+):
+    record_dir = getattr(cfg.sim, "rollout_record_path", "")
+    if not record_dir:
+        return
+
+    os.makedirs(record_dir, exist_ok=True)
+    token = result.get("token", "")
+    record_name = f"{prefix}_{step}.pkl"
+    record_path = os.path.join(record_dir, record_name)
+
+    metric_keys = [
+        "no_at_fault_collisions",
+        "drivable_area_compliance",
+        "ego_progress",
+        "time_to_collision_within_bound",
+        "comfort",
+        "score",
+        "ade_4s",
+        "fde_4s",
+    ]
+    result_keys = [
+        "trajectory",
+        "trajectory_8",
+        "all_trajectories",
+        "all_trajectories_8",
+        "poses_cls",
+        "metric_cache_path",
+        "chosen_ind",
+    ] + metric_keys
+
+    record = {
+        "prefix": prefix,
+        "step": step,
+        "token": token,
+        "score_mode": cfg.sim.get("score_mode", "lookup"),
+        "plan_idx": int(plan_idx) if plan_idx is not None else -1,
+        "current_pkl": current_queue[-1] if current_queue else None,
+        "history_queue": list(current_queue),
+        "merged_ann_file": ann_file,
+        "plan_trajectory": _to_rollout_record_value(plan_result),
+        "value": _to_rollout_record_value(value) if value is not None else None,
+        "model_result": {
+            key: _to_rollout_record_value(result[key])
+            for key in result_keys
+            if key in result
+        },
+    }
+
+    tmp_path = record_path + ".tmp"
+    with open(tmp_path, "wb") as f:
+        pickle.dump(record, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.rename(tmp_path, record_path)
+
+    index_path = os.path.join(record_dir, "rollout_index.csv")
+    row = {
+        "prefix": prefix,
+        "step": step,
+        "token": token,
+        "record_path": record_path,
+        "current_pkl": current_queue[-1] if current_queue else "",
+        "merged_ann_file": ann_file,
+        "plan_idx": int(plan_idx) if plan_idx is not None else -1,
+    }
+    for key in metric_keys:
+        row[key] = result.get(key, np.nan)
+
+    write_header = not os.path.exists(index_path)
+    pd.DataFrame([row]).to_csv(index_path, mode="a", header=write_header, index=False)
+    logger.info(f"Saved rollout record at {record_path}")
+
 async def run_inference_loop(model, cfg, logger):
     """async run inference loop"""
     MONITORED_FOLDER = cfg.sim.monitored_folder
@@ -167,28 +261,43 @@ async def run_inference_loop(model, cfg, logger):
             post_processor = ScorePostProcessor(
                 cfg.sim.post_process_path,
                 current_queue[-1],
+                score_mode=cfg.sim.get('score_mode', 'lookup'),
             )
             plan_result, plan_idx = post_processor.process(result)
+            output_step = cfg.queue_length + scene_step
 
             # save result
-            tmp_path = os.path.join(save_path, f'{file_monitor.prefix}_{cfg.queue_length + scene_step}_tmp.npy')
+            tmp_path = os.path.join(save_path, f'{file_monitor.prefix}_{output_step}_tmp.npy')
             np.save(tmp_path, plan_result)
-            os.rename(tmp_path, os.path.join(save_path, f'{file_monitor.prefix}_{cfg.queue_length + scene_step}.npy'))
+            os.rename(tmp_path, os.path.join(save_path, f'{file_monitor.prefix}_{output_step}.npy'))
 
             if value is not None:
                 np.save(
-                    os.path.join(save_path, f'value_{file_monitor.prefix}_{cfg.queue_length + scene_step}.npy'),
+                    os.path.join(save_path, f'value_{file_monitor.prefix}_{output_step}.npy'),
                     value
                 )
+
+            save_rollout_record(
+                cfg=cfg,
+                logger=logger,
+                result=result,
+                plan_result=plan_result,
+                plan_idx=plan_idx,
+                current_queue=current_queue,
+                ann_file=ann_file,
+                prefix=file_monitor.prefix,
+                step=output_step,
+                value=value,
+            )
 
             # Save plan_idx to csv file
             new_row = pd.DataFrame({
                 'prefix': [file_monitor.prefix],
-                'step': [cfg.queue_length + scene_step],
+                'step': [output_step],
                 'plan_idx': [plan_idx]
             })
             new_row.to_csv(csv_path, mode='a', header=False, index=False)
-            logger.info(f"Saved traj at step {cfg.queue_length + scene_step}")
+            logger.info(f"Saved traj at step {output_step}")
 
             step += 1
             scene_step += 1
@@ -242,13 +351,15 @@ def main():
             post_process_path=os.path.join(WORLDENGINE_ROOT, "data/alg_engine/test_8192_kmeans.npy"),
             plan_save_path='',
             merged_ann_save_dir = '',
-            monitored_folder = ''
+            monitored_folder = '',
+            rollout_record_path = '',
         ))
         cfg.sim = sim_cfg
-        cfg.data.test.type = "NavSimOpenSceneE2EClosedLoop"
 
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+    cfg.sim.setdefault('score_mode', cfg.model.planning_head.get('score_mode', 'lookup'))
+    cfg.data.test.type = "NavSimOpenSceneE2EClosedLoop"
     # import modules from string list.
     if cfg.get('custom_imports', None):
         from mmcv.utils import import_modules_from_strings

@@ -104,6 +104,7 @@ run_planner() {
     mkdir -p $test_path_worker/plan_traj
     mkdir -p $test_path_worker/frames
     mkdir -p $test_path_worker/merged_ann_files
+    mkdir -p $test_path_worker/rollout_records
 
     rm -rf $test_path_worker/merged_ann_files/*.pkl
     rm -rf $test_path_worker/frames/*.pkl
@@ -121,6 +122,7 @@ run_planner() {
         --cfg-options sim.monitored_folder="$test_path_worker/frames" \
         sim.plan_save_path="$test_path_worker/plan_traj" \
         sim.merged_ann_save_dir="$test_path_worker/merged_ann_files" \
+        sim.rollout_record_path="$test_path_worker/rollout_records" \
         sim.clean_temp_files=True \
         sim.clean_record_data=False \
         data_root="$test_path_worker/WE_output/openscene_format/" &

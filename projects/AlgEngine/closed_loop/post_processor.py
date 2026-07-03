@@ -9,13 +9,19 @@ class ScorePostProcessor:
             self,
             config,
             current_pkl,
+            score_mode='lookup',
             **kwargs
             ):
 
-        self.traj = np.load(config)
+        self.score_mode = score_mode
+        self.traj = None if self.score_mode in ('recompute', 'rollout') else np.load(config)
         self.data_info = mmcv.load(current_pkl, file_format="pkl")
 
     def process(self, result):
+        if self.score_mode in ('recompute', 'rollout'):
+            plan_traj = result['trajectory']
+            return plan_traj, -1
+
         plan_idx = result['chosen_ind']
         plan_traj = self.traj[plan_idx]
         # output_planning_traj = result['trajectory']     # should be the same

@@ -288,6 +288,7 @@ class CustomCollect3D(object):
             "cam_intrinsic",
             "cam_optim_intrinsic",
             "cam_distortion",
+            "metric_cache_path",
         ),
     ):
         self.keys = keys

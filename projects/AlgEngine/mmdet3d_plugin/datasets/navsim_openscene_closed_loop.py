@@ -117,6 +117,8 @@ class NavSimOpenSceneE2EClosedLoop(NavSimOpenSceneE2E):
             next=info["sample_next"],  # str: OpenScene unique sample token
             lidar2global_rotation=info["lidar2global"][:3, :3],
         )
+        if info["token"] in self.metric_cache_dict:
+            input_dict["metric_cache_path"] = self.metric_cache_dict[info["token"]]
 
         input_dict = self.update_transform(input_dict=input_dict, index=index)
         input_dict = self.update_sensor(input_dict=input_dict, index=index)

@@ -20,6 +20,11 @@ ASSET_NAME=${6:-$DATA_TYPE}
 SIMENGINE_ROOT="$WORLDENGINE_ROOT/projects/SimEngine"
 ALGENGINE_ROOT="$WORLDENGINE_ROOT/projects/AlgEngine"
 PYTHONPATH=$SIMENGINE_ROOT:$ALGENGINE_ROOT:$PYTHONPATH
+EXTRA_CFG_OPTIONS=()
+if [ -n "${ROLLOUT_SCORE_MODE:-}" ]; then
+    EXTRA_CFG_OPTIONS+=(model.planning_head.score_mode="$ROLLOUT_SCORE_MODE")
+    EXTRA_CFG_OPTIONS+=(sim.score_mode="$ROLLOUT_SCORE_MODE")
+fi
 
 # SimEngine setting
 ASSET_FOLDER_PATH="$WORLDENGINE_ROOT/data/sim_engine/assets/${ASSET_NAME}/assets"
@@ -40,11 +45,14 @@ fi
 mkdir -p $TEST_PATH/plan_traj
 mkdir -p $TEST_PATH/frames
 mkdir -p $TEST_PATH/merged_ann_files
+mkdir -p $TEST_PATH/rollout_records
 mkdir -p $TEST_PATH/WE_output
 
 rm -rf $TEST_PATH/merged_ann_files/*.pkl
 rm -rf $TEST_PATH/frames/*.pkl
 rm -rf $TEST_PATH/plan_traj/*.npy
+rm -rf $TEST_PATH/rollout_records/*.pkl
+rm -f $TEST_PATH/rollout_records/rollout_index.csv
 rm -f $TEST_PATH/WE_output/simulation_completed.flag
 
 # Run SimEngine simulation
@@ -83,6 +91,8 @@ python closed_loop/sim_test.py \
     --cfg-options sim.monitored_folder="$TEST_PATH/frames" \
     sim.plan_save_path="$TEST_PATH/plan_traj" \
     sim.merged_ann_save_dir="$TEST_PATH/merged_ann_files" \
+    sim.rollout_record_path="$TEST_PATH/rollout_records" \
     sim.clean_temp_files=True \
     sim.clean_record_data=False \
-    data_root="$TEST_PATH/WE_output/openscene_format/"
+    data_root="$TEST_PATH/WE_output/openscene_format/" \
+    "${EXTRA_CFG_OPTIONS[@]}"
