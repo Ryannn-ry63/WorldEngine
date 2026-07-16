@@ -89,6 +89,9 @@ class DenseRewardManager(BaseManager):
         self._cached_roadblock_ids = []
         self.buffer_size = self.engine.global_config['reward_buffer_size']
 
+        self.grpo_candidate_only = bool(
+            self.engine.global_config.get("grpo_candidate_only", False)
+        )
         self.route_roadblock_dict = {}
         gt_array = np.load(os.path.join(WE_root, 'data/alg_engine/test_8192_kmeans.npy'))
         self.gt_array = gt_array[:,:self.engine.global_config['reward_sampling_poses'] * 5,:]
@@ -185,6 +188,9 @@ class DenseRewardManager(BaseManager):
             # update detection tracks and traffic light data
             detection_tracks = self.converter.convert_to_detections_tracks_from_agent_input(self.current_step)
             self.detection_tracks_list.append(detection_tracks)
+        if self.grpo_candidate_only:
+            return None
+
         
         if self.current_step >= self.num_history - 1: 
             pdm_results = self.compute_pdm_scores(pdm_closed_trajectory)
@@ -228,7 +234,45 @@ class DenseRewardManager(BaseManager):
             # self.save_openloop_pdm_scores()
 
 
-    def compute_pdm_scores(self, pdm_closed_trajectory):
+    def score_candidate_trajectories(self, candidate_trajectories, current_step=None):
+        """Score arbitrary local-frame 10 Hz trajectories at the current state."""
+        candidates = np.asarray(candidate_trajectories, dtype=np.float64)
+        if candidates.ndim != 3 or candidates.shape[1:] != (40, 3):
+            raise ValueError("GRPO candidates must have shape [N, 40, 3]")
+        if candidates.shape[0] < 2:
+            raise ValueError("GRPO requires at least two candidates")
+        if not np.isfinite(candidates).all():
+            raise ValueError("GRPO candidates contain non-finite values")
+        if current_step is not None:
+            self.current_step = int(current_step)
+        if self.current_step < self.num_history - 1:
+            raise RuntimeError("cannot score GRPO candidates during history warmup")
+        if self.current_step >= len(self.ego_states_list):
+            raise RuntimeError("dense reward state is not ready for this step")
+        self.planner_input, initialization = self._get_planner_inputs(
+            self.current_scene
+        )
+        self._pdm_closed.initialize(initialization)
+        self._map_api = initialization["map_api"]
+        pdm_closed_trajectory = self._pdm_closed.compute_planner_trajectory(
+            self.planner_input
+        )
+        metrics = self.compute_pdm_scores(
+            pdm_closed_trajectory,
+            candidate_trajectories=candidates,
+        )
+        metrics["valid_mask"] = np.logical_and.reduce([
+            np.isfinite(value)
+            for value in metrics.values()
+        ])
+        return metrics
+
+
+    def compute_pdm_scores(
+        self,
+        pdm_closed_trajectory,
+        candidate_trajectories=None,
+    ):
         """Compute PDM scores"""
         initial_ego_state = self.ego_states_list[self.current_step]
         initial_observation = self.observations_list[self.current_step]
@@ -265,11 +309,16 @@ class DenseRewardManager(BaseManager):
 
 
         # 3. Set Trajectory
-        n = self.gt_array.shape[0]
+        local_candidates = (
+            self.gt_array
+            if candidate_trajectories is None
+            else np.asarray(candidate_trajectories, dtype=np.float64)
+        )
+        n = local_candidates.shape[0]
         curr = np.zeros((n, 1, 3))
         curr[:, 0, :2] = initial_ego_state.rear_axle.array
         curr[:, 0, 2] = initial_ego_state.rear_axle.heading
-        pred_trajectory = self.batched_global_transform(self.gt_array, initial_ego_state.rear_axle.array, initial_ego_state.rear_axle.heading)
+        pred_trajectory = self.batched_global_transform(local_candidates, initial_ego_state.rear_axle.array, initial_ego_state.rear_axle.heading)
         pred_states = np.concatenate([curr, pred_trajectory], axis=1)
         
         if self.use_cuda:

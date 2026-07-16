@@ -716,6 +716,13 @@ class NAVFormer(MVXTwoStageDetector):
         comfort=None,
         score=None,
         fail_mask=None,
+        grpo_initial_sample=None,
+        grpo_transition_action=None,
+        grpo_final_action=None,
+        grpo_old_log_probs=None,
+        grpo_rewards=None,
+        grpo_valid_mask=None,
+        grpo_selected_index=None,
         # fut gt for planning
         gt_future_boxes=None,
         gt_past_traj=None,
@@ -753,6 +760,15 @@ class NAVFormer(MVXTwoStageDetector):
 
         bev_embed = outs_track['bev_embed']
 
+        grpo_data = None
+        if getattr(self.planning_head, "requires_grpo_context", False):
+            grpo_data = {
+                "initial_sample": grpo_initial_sample,
+                "transition_action": grpo_transition_action,
+                "final_action": grpo_final_action,
+                "old_log_probs": grpo_old_log_probs,
+            }
+
         plan_results = self.planning_head.forward(
             bev_embed,
             command,
@@ -760,6 +776,7 @@ class NAVFormer(MVXTwoStageDetector):
             sdc_status,
             sdc_planning_mask_past,  # 1 x 4 x 4
             gt_pre_command_sdc, #1*4
+            grpo_data=grpo_data,
         )
         pdm_dict = {
             "no_at_fault_collisions":no_at_fault_collisions,
@@ -769,6 +786,11 @@ class NAVFormer(MVXTwoStageDetector):
             "comfort":comfort,
             "score":score,
         }
+
+        if grpo_data is not None:
+            pdm_dict["grpo_rewards"] = grpo_rewards
+            pdm_dict["grpo_valid_mask"] = grpo_valid_mask
+            pdm_dict["grpo_selected_index"] = grpo_selected_index
 
         if fail_mask is not None:
             pdm_dict['fail_mask'] = fail_mask
@@ -941,6 +963,15 @@ class NAVFormer(MVXTwoStageDetector):
                 pdm_dict["all_trajectories_8"] = all_traj_8[batch_idx]
             if poses_cls is not None:
                 pdm_dict["poses_cls"] = poses_cls[batch_idx]
+
+            for key in (
+                "grpo_initial_sample",
+                "grpo_transition_action",
+                "grpo_final_action",
+                "grpo_old_log_probs",
+            ):
+                if key in plan_results:
+                    pdm_dict[key] = plan_results[key][batch_idx].detach().float().cpu().numpy()
 
             gt_traj = gt_traj_8[batch_idx]
             pred_traj = pdm_dict["trajectory"][4::5, :2]

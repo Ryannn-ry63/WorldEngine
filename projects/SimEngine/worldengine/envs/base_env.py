@@ -161,6 +161,13 @@ class BaseEnv:
                     # save completed scenario ID for resume functionality
                     self._save_completed_scenario(completed_scenario_id)
 
+                    scenario_limit = int(
+                        self.config.get("max_successful_scenarios", 0)
+                    )
+                    if scenario_limit > 0 and sum(
+                        report.succeeded for report in reports
+                    ) >= scenario_limit:
+                        break
                     # all scenarios done
                     if termination:
                         break

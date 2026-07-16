@@ -86,6 +86,52 @@ class NAVFormerClient(BaseClient):
         else:
             prefix = parts[-1]  # for original data, e.g. bb4f37403cea5b0e
 
+        candidate_dir = self.config.get("grpo_candidate_path", "")
+        reward_dir = self.config.get("grpo_reward_path", "")
+        if candidate_dir or reward_dir:
+            if not candidate_dir or not reward_dir:
+                raise ValueError(
+                    "grpo_candidate_path and grpo_reward_path must be set together"
+                )
+            state_key = f"{prefix}_{step + 1}"
+            candidate_path = os.path.join(candidate_dir, state_key + ".npz")
+            while not os.path.exists(candidate_path):
+                time.sleep(0.2)
+            with np.load(candidate_path, allow_pickle=False) as payload:
+                candidates = np.asarray(
+                    payload["candidate_trajectories"], dtype=np.float64
+                )
+                sidecar_version = str(payload["policy_version"].item())
+                selected_index = int(payload["selected_index"].item())
+            expected_version = str(
+                self.config.get("grpo_policy_version", sidecar_version)
+            )
+            if sidecar_version != expected_version:
+                raise RuntimeError(
+                    f"GRPO policy version mismatch: {sidecar_version} != "
+                    f"{expected_version}"
+                )
+            manager = self.engine.managers.get("dense_reward_manager")
+            if manager is None:
+                raise RuntimeError(
+                    "GRPO candidate scoring requires dense_reward_manager"
+                )
+            reward_path = os.path.join(reward_dir, state_key + ".pkl")
+            if not os.path.exists(reward_path):
+                metrics = manager.score_candidate_trajectories(
+                    candidates, current_step=step
+                )
+                metrics["policy_version"] = sidecar_version
+                metrics["selected_index"] = selected_index
+                metrics["state_key"] = state_key
+                os.makedirs(reward_dir, exist_ok=True)
+                temporary_path = reward_path + ".tmp"
+                with open(temporary_path, "wb") as stream:
+                    pickle.dump(
+                        metrics, stream, protocol=pickle.HIGHEST_PROTOCOL
+                    )
+                os.replace(temporary_path, reward_path)
+
         traj_file_path = os.path.join(
             self.config["planner_data_path"], f"{prefix}_{step + 1}.npy"
         )

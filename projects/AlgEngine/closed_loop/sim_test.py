@@ -100,6 +100,34 @@ def clean_related_files(cfg, logger):
                 if os.path.isdir(folder_path):
                     shutil.rmtree(folder_path)
 
+def save_grpo_candidate_sidecar(cfg, result, prefix, step):
+    """Atomically publish exact GRPO candidates for same-state scoring."""
+    candidate_dir = getattr(cfg.sim, "grpo_candidate_path", "")
+    if not candidate_dir or "grpo_final_action" not in result:
+        return None
+    if "all_trajectories" not in result:
+        raise KeyError("GRPO rollout result has no all_trajectories")
+    os.makedirs(candidate_dir, exist_ok=True)
+    output_path = os.path.join(candidate_dir, f"{prefix}_{step}.npz")
+    temporary_path = output_path + ".tmp"
+    payload = {
+        "candidate_trajectories": np.asarray(
+            _to_rollout_record_value(result["all_trajectories"]),
+            dtype=np.float64,
+        ),
+        "selected_index": np.asarray(
+            int(result.get("chosen_ind", -1)), dtype=np.int64
+        ),
+        "token": np.asarray(str(result.get("token", ""))),
+        "policy_version": np.asarray(
+            str(getattr(cfg.sim, "policy_version", "unknown"))
+        ),
+    }
+    with open(temporary_path, "wb") as stream:
+        np.savez_compressed(stream, **payload)
+    os.replace(temporary_path, output_path)
+    return output_path
+
 
 def _to_rollout_record_value(value):
     if torch.is_tensor(value):
@@ -152,6 +180,10 @@ def save_rollout_record(
         "poses_cls",
         "metric_cache_path",
         "chosen_ind",
+        "grpo_initial_sample",
+        "grpo_transition_action",
+        "grpo_final_action",
+        "grpo_old_log_probs",
     ] + metric_keys
 
     record = {
@@ -159,6 +191,7 @@ def save_rollout_record(
         "step": step,
         "token": token,
         "score_mode": cfg.sim.get("score_mode", "lookup"),
+        "policy_version": cfg.sim.get("policy_version", "unknown"),
         "plan_idx": int(plan_idx) if plan_idx is not None else -1,
         "current_pkl": current_queue[-1] if current_queue else None,
         "history_queue": list(current_queue),
@@ -265,6 +298,8 @@ async def run_inference_loop(model, cfg, logger):
             )
             plan_result, plan_idx = post_processor.process(result)
             output_step = cfg.queue_length + scene_step
+            save_grpo_candidate_sidecar(
+                cfg, result, file_monitor.prefix, output_step)
 
             # save result
             tmp_path = os.path.join(save_path, f'{file_monitor.prefix}_{output_step}_tmp.npy')
@@ -353,6 +388,9 @@ def main():
             merged_ann_save_dir = '',
             monitored_folder = '',
             rollout_record_path = '',
+            grpo_candidate_path = '',
+            grpo_reward_path = '',
+            policy_version = 'unknown',
         ))
         cfg.sim = sim_cfg
 

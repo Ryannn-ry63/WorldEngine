@@ -1,3 +1,4 @@
 from .traj_scoring_head import TrajScoringHead
 from .traj_scoring_head_RL import TrajScoringHeadRL
 from .diffusion_planning_head import DiffusionPlanningHead
+from .diffusion_grpo_planning_head import DiffusionGRPOPlanningHead

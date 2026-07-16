@@ -14,6 +14,8 @@ CKPT=$2
 MODEL_NAME=$3
 DATA_TYPE=$4
 ASSET_NAME=${5:-$DATA_TYPE}
+POLICY_VERSION=${6:-round0}
+MAX_SCENES_PER_WORKER=${7:-2}
 
 # Resume flag - set to true to skip already completed scenarios
 ENABLE_RESUME=true
@@ -75,6 +77,11 @@ conda run --no-capture-output -n $SIMENGINE_ENV_NAME python worldengine/runner/r
     planner_client_folder=$test_path/__WORKER_ID__/frames \
     with_metric_manager=true \
     with_dense_reward_manager=true \
+    grpo_candidate_only=true \
+    grpo_candidate_path=$test_path/__WORKER_ID__/grpo_candidates \
+    grpo_reward_path=$test_path/__WORKER_ID__/grpo_rewards \
+    grpo_policy_version=$POLICY_VERSION \
+    max_successful_scenarios=$MAX_SCENES_PER_WORKER \
     distributed_mode=SCENARIO_BASED \
     worker=ray_distributed \
     worker_id_prefix=split_ \
@@ -103,6 +110,8 @@ run_planner() {
     mkdir -p $test_path_worker/merged_ann_files
     mkdir -p $test_path_worker/rollout_records
 
+    mkdir -p $test_path_worker/grpo_candidates
+    mkdir -p $test_path_worker/grpo_rewards
     rm -rf $test_path_worker/merged_ann_files/*.pkl
     rm -rf $test_path_worker/frames/*.pkl
     rm -rf $test_path_worker/plan_traj/*.npy
@@ -122,6 +131,9 @@ run_planner() {
         sim.rollout_record_path="$test_path_worker/rollout_records" \
         sim.clean_temp_files=True \
         sim.clean_record_data=False \
+        sim.grpo_candidate_path="$test_path_worker/grpo_candidates" \
+        sim.grpo_reward_path="$test_path_worker/grpo_rewards" \
+        sim.policy_version="$POLICY_VERSION" \
         data_root="$test_path_worker/WE_output/openscene_format/" &
 
     local alg_pid=$!
@@ -134,7 +146,7 @@ run_planner() {
     if [ $alg_exit_code -eq 0 ]; then
         echo "Split ${split_id} completed successfully on GPU $gpu_id"
     else
-        echo "Split ${split_id} failed - WE exit code: $we_exit_code - Alg exit code: $alg_exit_code"
+        echo "Split ${split_id} failed - Alg exit code: $alg_exit_code"
         return 1
     fi
 }

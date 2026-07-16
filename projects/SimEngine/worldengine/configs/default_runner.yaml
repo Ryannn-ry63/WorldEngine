@@ -142,6 +142,11 @@ buffer_size: 9
 with_dense_reward_manager: false
 reward_sampling_poses: 8
 reward_buffer_size: 9
+grpo_candidate_only: false
+grpo_candidate_path: ""
+grpo_reward_path: ""
+grpo_policy_version: "unknown"
+max_successful_scenarios: 0
 
 # Resume functionality
 enable_resume: false
