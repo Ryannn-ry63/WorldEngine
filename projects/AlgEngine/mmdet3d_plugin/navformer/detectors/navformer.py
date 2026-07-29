@@ -760,6 +760,7 @@ class NAVFormer(MVXTwoStageDetector):
 
         bev_embed = outs_track['bev_embed']
 
+        planning_kwargs = {}
         grpo_data = None
         if getattr(self.planning_head, "requires_grpo_context", False):
             grpo_data = {
@@ -768,6 +769,9 @@ class NAVFormer(MVXTwoStageDetector):
                 "final_action": grpo_final_action,
                 "old_log_probs": grpo_old_log_probs,
             }
+            planning_kwargs["grpo_data"] = grpo_data
+        if getattr(self.planning_head, "uses_navigation_goal", False):
+            planning_kwargs["navigation_goal"] = sdc_planning[:, 0, 7, :2]
 
         plan_results = self.planning_head.forward(
             bev_embed,
@@ -776,7 +780,7 @@ class NAVFormer(MVXTwoStageDetector):
             sdc_status,
             sdc_planning_mask_past,  # 1 x 4 x 4
             gt_pre_command_sdc, #1*4
-            grpo_data=grpo_data,
+            **planning_kwargs,
         )
         pdm_dict = {
             "no_at_fault_collisions":no_at_fault_collisions,
@@ -852,6 +856,12 @@ class NAVFormer(MVXTwoStageDetector):
 
         bev_embed = outs_track['bev_embed']
 
+        planning_kwargs = {}
+        if getattr(self.planning_head, "uses_navigation_goal", False):
+            planning_kwargs["sample_tokens"] = [
+                meta[3]["sample_idx"] for meta in img_metas
+            ]
+
         plan_results = self.planning_head.forward(
             bev_embed,
             command[0],
@@ -859,18 +869,12 @@ class NAVFormer(MVXTwoStageDetector):
             sdc_status[0],
             sdc_planning_mask_past[0],
             gt_pre_command_sdc[0],
+            **planning_kwargs,
         )
 
         b = img.shape[0]
         score_mode = getattr(self.planning_head, "score_mode", "lookup")
 
-        if score_mode == "recompute":
-            return self._forward_test_recompute_pdm(
-                plan_results=plan_results,
-                img_metas=img_metas,
-                sdc_planning=sdc_planning,
-                batch_size=b,
-            )
         if score_mode == "rollout":
             return self._forward_test_rollout(
                 plan_results=plan_results,
@@ -884,20 +888,39 @@ class NAVFormer(MVXTwoStageDetector):
         all_traj_40 = plan_results.get("all_trajectories")
         all_traj_8 = plan_results.get("all_trajectories_8")
         poses_cls = plan_results.get("poses_cls")
+        use_online_pdm = getattr(self.planning_head, 'requires_online_pdm_scoring', False)
 
         return_list = []
         for batch_idx in range(b):
             chosen_idx = chosen_indices[batch_idx]
+            if use_online_pdm:
+                # Generated-trajectory heads do not select from the 8192-entry
+                # vocabulary PDM cache. Leave NaN placeholders; dataset.evaluate()
+                # fills real scores from NAVSIM metric_cache.
+                pdm_scores = {
+                    "no_at_fault_collisions": float('nan'),
+                    "drivable_area_compliance": float('nan'),
+                    "ego_progress": float('nan'),
+                    "time_to_collision_within_bound": float('nan'),
+                    "comfort": float('nan'),
+                    "score": float('nan'),
+                }
+            else:
+                # Vocabulary-selection heads directly index the pre-computed
+                # 8192-entry PDM cache.
+                pdm_scores = {
+                    "no_at_fault_collisions": no_at_fault_collisions[0][batch_idx, chosen_idx].item(),
+                    "drivable_area_compliance": drivable_area_compliance[0][batch_idx, chosen_idx].item(),
+                    "ego_progress": ego_progress[0][batch_idx, chosen_idx].item(),
+                    "time_to_collision_within_bound": time_to_collision_within_bound[0][batch_idx, chosen_idx].item(),
+                    "comfort": comfort[0][batch_idx, chosen_idx].item(),
+                    "score": score[0][batch_idx, chosen_idx].item(),
+                }
             pdm_dict = {
-                "token":img_metas[batch_idx][3]['sample_idx'],  # TODO: hard code 3rd frame for current frame
-                "no_at_fault_collisions":no_at_fault_collisions[0][batch_idx, chosen_idx].item(),
-                "drivable_area_compliance":drivable_area_compliance[0][batch_idx, chosen_idx].item(),
-                "ego_progress":ego_progress[0][batch_idx, chosen_idx].item(),
-                "time_to_collision_within_bound":time_to_collision_within_bound[0][batch_idx, chosen_idx].item(),
-                "comfort":comfort[0][batch_idx, chosen_idx].item(),
-                "score":score[0][batch_idx, chosen_idx].item(),
-                'chosen_ind':chosen_idx.item(),
-                'trajectory':plan_results['trajectory'][batch_idx].cpu().numpy(),
+                "token": img_metas[batch_idx][3]['sample_idx'],  # 3rd frame = current frame
+                **pdm_scores,
+                'chosen_ind': chosen_idx.item(),
+                'trajectory': plan_results['trajectory'][batch_idx].cpu().numpy(),
             }
             if traj_8 is not None:
                 pdm_dict["trajectory_8"] = traj_8[batch_idx].detach().float().cpu().numpy()

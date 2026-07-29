@@ -70,6 +70,7 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         history_frame_num=3,
         future_frame_num=8,
         fix_can_bus_rotation=False,
+        diffusiondrive_data_mode=False,
         map_root=None,
         with_velocity=True,
         use_valid_flag=False,
@@ -85,6 +86,7 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         else:
             self.map_root = map_root
         self.fix_can_bus_rotation = fix_can_bus_rotation
+        self.diffusiondrive_data_mode = diffusiondrive_data_mode
         self.nav_filter_path = nav_filter_path
 
         if "navtrain" in os.path.basename(self.nav_filter_path):
@@ -138,6 +140,28 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         # Load PDM infos after data_infos is loaded
         self.load_pdm_infos()
 
+        # Build token→path mapping for NAVSIM metric_cache (used by online PDM scoring)
+        self.metric_cache_dict = {}
+        if metric_cache_path and os.path.isdir(metric_cache_path):
+            metadata_dir = os.path.join(metric_cache_path, "metadata")
+            csv_files = [f for f in os.listdir(metadata_dir) if f.endswith(".csv")] if os.path.isdir(metadata_dir) else []
+            if csv_files:
+                with open(os.path.join(metadata_dir, csv_files[0]), "r") as f:
+                    lines = f.read().splitlines()[1:]  # skip header
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    token = line.split("/")[-2]
+                    # Stored paths may be relative; resolve against metric_cache_path
+                    abs_path = line if os.path.isabs(line) else os.path.join(metric_cache_path, line)
+                    self.metric_cache_dict[token] = abs_path
+                logger.info(f'loaded metric_cache index: {len(self.metric_cache_dict)} tokens from {metric_cache_path}')
+            else:
+                logger.warning(f'metric_cache metadata CSV not found under {metadata_dir}')
+        elif metric_cache_path:
+            logger.warning(f'metric_cache_path does not exist: {metric_cache_path}')
+
 
     def load_annotations(self, ann_file):
 
@@ -174,9 +198,18 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         return data_infos
 
     def load_pdm_infos(self):
-        with open(f'{self.pdm_path}.pkl', 'rb') as f:
-            self.pdm_dict = pickle.load(f)
-        logger.info(f'loaded PDM score cache of {len(self.pdm_dict)} tokens.')
+        if self.diffusiondrive_data_mode:
+            self.pdm_dict = {}
+            return
+        cache_file = f'{self.pdm_path}.pkl' if self.pdm_path else None
+        if cache_file and os.path.isfile(cache_file):
+            with open(cache_file, 'rb') as f:
+                self.pdm_dict = pickle.load(f)
+            logger.info(f'loaded PDM score cache of {len(self.pdm_dict)} tokens.')
+            return
+        raise FileNotFoundError(
+            f'PDM score cache not found: {cache_file}'
+        )
 
     def load_metric_cache_paths(self, metric_cache_path):
         if metric_cache_path is None:
@@ -533,6 +566,8 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         return
 
     def get_pdm_score_info(self, input_dict, index=None, info=None):
+        if self.diffusiondrive_data_mode:
+            return self.get_zero_pdm(input_dict)
         if input_dict['sample_idx'] not in self.pdm_dict:
             logger.warning(f"PDM score not found for token: {input_dict['sample_idx']}")
             return self.get_zero_pdm(input_dict)
@@ -1073,26 +1108,68 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         ).convert_to(self.box_mode_3d)
         gt_sdc_bbox = DC(gt_sdc_bbox, cpu_only=True)
 
-        # ego trajectory in lidar coordinate
-        gt_pre_bbox_sdc_lidar = info["gt_pre_bbox_sdc_lidar"]  # 1 x 4 x 9
-        gt_fut_bbox_sdc_lidar = info["gt_fut_bbox_sdc_lidar"]  # 1 x 12 x 9
+        gt_pre_bbox_sdc_lidar = info["gt_pre_bbox_sdc_lidar"]
+        gt_fut_bbox_sdc_lidar = info["gt_fut_bbox_sdc_lidar"]
+        if self.diffusiondrive_data_mode:
+            # DiffusionDrive follows NAVSIM's ego rear-axle convention, while
+            # the converter stores temporal ego boxes in the lidar frame.
+            lidar2ego = np.asarray(
+                info.get("lidar2ego", np.eye(4)), dtype=np.float64
+            )
+            lidar2ego_yaw = quaternion_yaw(
+                Quaternion(matrix=lidar2ego[:3, :3])
+            )
+
+            def _trajectory_lidar_to_ego(boxes):
+                boxes = np.asarray(boxes).copy()
+                xyz = boxes[..., :3]
+                boxes[..., :3] = (
+                    np.einsum("ij,...j->...i", lidar2ego[:3, :3], xyz)
+                    + lidar2ego[:3, 3]
+                )
+                boxes[..., 6] = (
+                    boxes[..., 6] + lidar2ego_yaw + np.pi
+                ) % (2 * np.pi) - np.pi
+                return boxes
+
+            gt_pre_bbox_sdc_lidar = _trajectory_lidar_to_ego(
+                gt_pre_bbox_sdc_lidar
+            )
+            gt_fut_bbox_sdc_lidar = _trajectory_lidar_to_ego(
+                gt_fut_bbox_sdc_lidar
+            )
 
         # ego trajectory in global coordinate
         gt_pre_bbox_sdc_global = info["gt_pre_bbox_sdc_global"]  # 1 x 4 x 9
         gt_fut_bbox_sdc_global = info["gt_fut_bbox_sdc_global"]  # 1 x 12 x 9
 
-        # ego trajectory mask
         gt_fut_bbox_sdc_mask = info["gt_fut_bbox_sdc_mask"]  # 1 x future_frame_num x 1
+        if self.diffusiondrive_data_mode:
+            # Normalize across navtrain/rollout bool masks and BWM float masks.
+            gt_fut_bbox_sdc_mask = gt_fut_bbox_sdc_mask.astype(np.float32)
         gt_fut_bbox_sdc_mask = np.repeat(gt_fut_bbox_sdc_mask, 2, axis=2)  # 1 x future_frame_num x 2
 
         gt_pre_bbox_sdc_mask = info["gt_pre_bbox_sdc_mask"]  # 1 x history_frame_num x 1
+        if self.diffusiondrive_data_mode:
+            gt_pre_bbox_sdc_mask = gt_pre_bbox_sdc_mask.astype(np.float32)
         gt_pre_bbox_sdc_mask = np.repeat(gt_pre_bbox_sdc_mask, 4, axis=2)  # 1 x history_frame_num x 4
         gt_pre_command_sdc = info["gt_pre_command_sdc"]
+        if self.diffusiondrive_data_mode:
+            # BWM augmentation stores commands as float64.
+            gt_pre_command_sdc = gt_pre_command_sdc.astype(np.int64)
 
         sdc_planning = gt_fut_bbox_sdc_lidar[
             :, :self.planning_steps, [0, 1, 6]
-        ]  # 1 x planning_steps x 3, lidar coordinate, x,y,yaw
+        ]  # 1 x planning_steps x 3; frame selected by diffusiondrive_data_mode
         sdc_planning_mask = gt_fut_bbox_sdc_mask[:, :self.planning_steps]
+
+        # Match the original NAVSIM styled-E2E status feature: current ego
+        # velocity (x, y) and acceleration (x, y). The command is passed
+        # separately and one-hot encoded by each planning head.
+        can_bus = np.asarray(info.get("can_bus", np.zeros(18)))
+        ego_velocity = can_bus[10:12].astype(np.float32)
+        ego_acceleration = can_bus[7:9].astype(np.float32)
+        navsim_status = np.concatenate([ego_velocity, ego_acceleration])
 
         # update output dictionary for ego's prediction
         input_dict.update(
@@ -1102,7 +1179,7 @@ class NavSimOpenSceneE2E(Custom3DDataset):
                 gt_sdc_label=gt_sdc_label,  # DC (tensor[0])
                 gt_sdc_fut_traj=gt_fut_bbox_sdc_lidar[
                     :, :, :2
-                ],  # 1 x 12 x 2, lidar coordinate
+                ],  # 1 x 12 x 2; frame selected by diffusiondrive_data_mode
                 gt_sdc_fut_traj_mask=gt_fut_bbox_sdc_mask,  # 1 x 12 x 2
                 # planning labels
                 command=np.argmax(info["driving_command"]),  # int, change from 1-indexed to 0-indexed
@@ -1114,15 +1191,88 @@ class NavSimOpenSceneE2E(Custom3DDataset):
                 sdc_planning_past=gt_pre_bbox_sdc_lidar[:, :, [0, 1, 6]],
                 sdc_planning_mask_past=gt_pre_bbox_sdc_mask,
                 gt_pre_command_sdc=gt_pre_command_sdc,
-                sdc_status=sdc_status[[0, 1, 6]]
             )
         )
+        if self.diffusiondrive_data_mode:
+            input_dict.update(sdc_status=navsim_status)
+        else:
+            input_dict.update(sdc_status=sdc_status[[0, 1, 6]])
 
         return input_dict
 
     def update_ego_planning(self, input_dict, index):
         # sdc_planning already added in update_ego_prediction
         return input_dict
+
+    def _requires_official_pdm_rescoring(self, results):
+        """Return whether generated trajectories need official repo scoring."""
+        return any(
+            np.isnan(result.get('score', np.nan))
+            for result in results
+        )
+
+    def _compute_online_pdm_scores(self, results):
+        """Compute real PDM sub-scores for each predicted trajectory via NAVSIM metric_cache.
+
+        Designed for generated-trajectory heads whose outputs cannot index the
+        pre-computed 8192-vocabulary PDM score cache used by selection heads.
+        Updates each result dict in-place.  Silently skips tokens with no cache entry.
+        """
+        if not self.metric_cache_dict:
+            return
+        try:
+            from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
+            from navsim.common.dataclasses import Trajectory
+            from navsim.evaluate.pdm_score import pdm_score
+            from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
+            from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
+            import math as _math
+        except ImportError as e:
+            logger.warning(f'NAVSIM PDM scoring unavailable ({e}); PDM metrics remain NaN.')
+            return
+
+        # Keep the model trajectory at 8 poses / 0.5 s below, but simulate and
+        # score on NAVSIM's official 40 poses / 0.1 s timeline. pdm_score
+        # interpolates the model trajectory onto this evaluation sampling.
+        evaluation_sampling = TrajectorySampling(num_poses=40, interval_length=0.1)
+        simulator = PDMSimulator(proposal_sampling=evaluation_sampling)
+        scorer = PDMScorer(proposal_sampling=evaluation_sampling)
+
+        n_scored = 0
+        for result in results:
+            token = result.get('token')
+            if token not in self.metric_cache_dict:
+                continue
+            # Only score results that carry NaN placeholders. Vocabulary-selection
+            # heads already return cached scores and are left unchanged.
+            if not _math.isnan(result.get('score', float('nan'))):
+                continue
+            traj_40 = result.get('trajectory')
+            if traj_40 is None:
+                continue
+            try:
+                metric_cache = self.get_metric_cache(token)
+                # trajectory is (40, 3) at 10 Hz; subsample every 5th to get 8 poses at 2 Hz
+                poses_8 = traj_40[4::5].astype(np.float32)  # (8, 3): (x, y, heading)
+                traj = Trajectory(poses_8)
+                pdm_result = pdm_score(
+                    metric_cache=metric_cache,
+                    model_trajectory=traj,
+                    future_sampling=evaluation_sampling,
+                    simulator=simulator,
+                    scorer=scorer,
+                )
+                result['no_at_fault_collisions'] = float(pdm_result.no_at_fault_collisions)
+                result['drivable_area_compliance'] = float(pdm_result.drivable_area_compliance)
+                result['ego_progress'] = float(pdm_result.ego_progress)
+                result['time_to_collision_within_bound'] = float(pdm_result.time_to_collision_within_bound)
+                result['comfort'] = float(pdm_result.comfort)
+                result['score'] = float(pdm_result.score)
+                n_scored += 1
+            except Exception as e:
+                logger.warning(f'Online PDM scoring failed for token {token}: {e}')
+
+        logger.info(f'Online PDM scoring: {n_scored}/{len(results)} tokens scored.')
 
     def evaluate(
         self,
@@ -1135,6 +1285,15 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         out_dir=None,
         pipeline=None,
     ):
+        eval_logger = logger if logger is not None else get_logger(__name__)
+        if self._requires_official_pdm_rescoring(results):
+            eval_logger.info(
+                'Generated trajectories detected; skipping embedded PDM scoring. '
+                'Rescore the exported submission with the official NAVSIM repository.'
+            )
+        else:
+            self._compute_online_pdm_scores(results)
+
         results_df = pd.DataFrame(results)
         results_df = results_df.drop_duplicates(subset=['token'], keep='first')
 
@@ -1147,7 +1306,7 @@ class NavSimOpenSceneE2E(Custom3DDataset):
 
         average_row = results_df.drop(columns=["token"]).mean(skipna=True)
         average_row['token'] = 'average'
-        results_df.loc[len(results_df)] = average_row
+        results_df = pd.concat([results_df, average_row.to_frame().T], ignore_index=True)
 
         save_path = Path(jsonfile_prefix + ".csv")
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1161,7 +1320,8 @@ class NavSimOpenSceneE2E(Custom3DDataset):
             trajectory = Trajectory(result['trajectory'][4::5])
             output[token] = trajectory
 
-        if "navtest.yaml" in self.nav_filter_path:
+        nav_filter_name = Path(self.nav_filter_path).name
+        if nav_filter_name in ("navtest.yaml", "navtest_failures_filtered.yaml"):
             submission = {
                 "team_name": "PLACEHOLDER",
                 "authors": ["PLACEHOLDER"],
@@ -1175,13 +1335,17 @@ class NavSimOpenSceneE2E(Custom3DDataset):
                 pickle.dump(submission, file)
 
         if "navtest_failures" not in self.nav_filter_path and "navtest.yaml" in self.nav_filter_path:
-            with open("configs/navsim_splits/navtest_split/navtest_failures_filtered.yaml", 'r') as file:
+            failures_yaml = os.path.join(
+                os.path.dirname(self.nav_filter_path),
+                "navtest_failures_filtered.yaml",
+            )
+            with open(failures_yaml, 'r') as file:
                 nav_filter = yaml.safe_load(file)
             navtest_failures_tokens = nav_filter['tokens']
             results_df_navtest_failures = results_df[results_df['token'].isin(navtest_failures_tokens)]
             average_row_navtest_failures = results_df_navtest_failures.drop(columns=["token"]).mean(skipna=True)
             average_row_navtest_failures['token'] = 'average'
-            results_df_navtest_failures.loc[len(results_df_navtest_failures)] = average_row_navtest_failures
+            results_df_navtest_failures = pd.concat([results_df_navtest_failures, average_row_navtest_failures.to_frame().T], ignore_index=True)
 
             save_path_navtest_failures = Path(jsonfile_prefix + "_navtest_failures.csv")
             save_path_navtest_failures.parent.mkdir(parents=True, exist_ok=True)

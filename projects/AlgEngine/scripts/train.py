@@ -24,7 +24,7 @@ from mmseg import __version__ as mmseg_version
 warnings.filterwarnings("ignore")
 
 
-def configure_h100_sdp_backend():
+def maybe_disable_efficient_sdp():
     if os.environ.get("NAVFORMER_DISABLE_EFFICIENT_SDP", "0") != "1":
         return
 
@@ -111,7 +111,7 @@ def parse_args():
 
 
 def main():
-    configure_h100_sdp_backend()
+    maybe_disable_efficient_sdp()
     args = parse_args()
 
     cfg = Config.fromfile(args.config)

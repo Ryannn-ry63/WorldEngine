@@ -1,10 +1,10 @@
 <div align="center">
 <img src="https://raw.githubusercontent.com/OpenDriveLab/opendrivelab.github.io/refs/heads/master/WorldEngine/imgs/WE_title.png" width="800px">
 
-# Towards the Era of Post-Training for Physical AI
+# Towards the Era of Post-Training for Autonomous Driving
 > *The missing infrastructure for Physical AI post-training in AD. Open-source. Production-validated.*
 
-[![Paper](https://img.shields.io/badge/Paper-Coming_Soon-b31b1b.svg?style=for-the-badge&logo=arxiv)](https://github.com/OpenDriveLab/WorldEngine)
+[![Paper](https://img.shields.io/badge/arXiv-2606.19836-b31b1b.svg?style=for-the-badge&logo=arxiv)](https://arxiv.org/abs/2606.19836)
 [![YouTube](https://img.shields.io/badge/YouTube-Video-FF0000.svg?style=for-the-badge&logo=youtube)](https://www.youtube.com/watch?v=P1zEyfqa1uY)
 [![Hugging Face](https://img.shields.io/badge/Hugging_Face-Dataset-ffc107.svg?style=for-the-badge&logo=huggingface)](https://huggingface.co/datasets/OpenDriveLab/WorldEngine)
 [![ModelScope](https://img.shields.io/badge/ModelScope-Dataset-orange.svg?style=for-the-badge)](https://www.modelscope.cn/datasets/OpenDriveLab/WorldEngine)
@@ -41,6 +41,7 @@
 - [Citation](#citation)
 - [Contributing](#contributing)
 - [License](#license)
+- [Acknowledgements](#acknowledgements)
 - [Related Resources](#related-resources)
 
 ## Highlights
@@ -54,6 +55,7 @@
 
 
 ## News
+- **[2026/06/19]** Paper released on arXiv. See [World Engine: Towards the Era of Post-Training for Autonomous Driving](https://arxiv.org/abs/2606.19836).
 - **[2026/04/09]** Official dataset released. See [OpenDriveLab/WorldEngine](https://huggingface.co/datasets/OpenDriveLab/WorldEngine) or [OpenDriveLab/WorldEngine (ModelScope)](https://www.modelscope.cn/datasets/OpenDriveLab/WorldEngine)
 - **[2026/04/10]** Official code repository established.
 
@@ -66,26 +68,27 @@ We compare different post-training paradigms on the nuPlan dataset, evaluating o
 > **Early stage**. Stable ckpts and corresponding results coming soon.
 > - **Open-loop PDMS** is aligned with [NAVSIM v1.1](https://github.com/autonomousvision/navsim) PDM Score. *Common* denotes the standard `navtest` split; *Rare* denotes the `navtest_failures` subset — failure-prone rare-case scenarios extracted from `navtest`.
 > - **Closed-loop Success Rate** is defined as the fraction of simulated driving episodes completed without collision or off-road failure.
+> - **Closed-loop Ego Progress (EP)** measures the route progress made by the ego vehicle during **SimEngine closed-loop testing**, reflecting whether the agent makes meaningful forward progress rather than merely avoiding collision or off-road failure.
 > - **Closed-loop PDMS*** is the PDM Score obtained via **SimEngine closed-loop testing**, where the planner interacts with reactive agents in simulation under real-time rendering.
 >
 > **Training notes:**
 > - **Rare logs** are failure-prone scenarios automatically extracted from `navtrain` by the pre-trained agent itself (see [Rare Case Extraction](docs/algengine_usage.md#rare-case-extraction)). 
 > - **Common logs** are the standard cases in `navtrain`.
 
-| Method | Open-loop PDMS ↑ (common) | Open-loop PDMS ↑ (rare) | Closed-loop Success Rate ↑ | Closed-loop PDMS* ↑ |
-|:-------|:-------------------------:|:-----------------------:|:--------------------------:|:--------------------:|
-| Base model | 85.62 | 47.15 | 73.61 | 60.28 |
-| Supervised fine-tuning on rare logs | 87.03 | 49.68 | 73.26 | 62.26 |
-| Post-training on common logs | 86.15 | 51.49 | 64.58 | 56.66 |
-| Post-training on rare logs | 89.29 | 62.56 | 74.31 | 62.55 |
-| Post-training on rare synthetic replays | 88.01 | 56.62 | 76.39 | 62.11 |
-| Post-training on rare rollouts w/o Behaviour WM | 88.99 | 59.69 | 85.07 | 68.29 |
-| **Post-training with WorldEngine** | **88.95** | **59.83** | **88.89** | **70.12** |
+| Method | Open-loop PDMS ↑ (common) | Open-loop PDMS ↑ (rare) | Closed-loop SR ↑ (rare) | Closed-loop EP ↑ (rare) | Closed-loop PDMS* ↑ (rare) |
+|:-------|:-------------------------:|:-----------------------:|:-----------------------:|:-----------------------:|:--------------------------:|
+| Base model | 85.64 | 47.14 | 73.66 | 46.71 | 60.98 |
+| Supervised fine-tuning on rare logs | 87.50 | 52.55 | 74.51 | 47.59 | 61.87 |
+| Post-training on common logs | 87.69 | 49.36 | 69.63 | 51.02 | 60.21 |
+| Post-training on rare logs | 88.51 | 59.20 | 73.35 | 51.86 | 62.78 |
+| Post-training on rare synthetic replays | 82.61 | 62.69 | 87.20 | 32.49 | 63.22 |
+| Post-training on rare rollouts w/o Behaviour WM | 88.53 | 61.88 | 77.96 | 56.74 | 67.33 |
+| **Post-training with WorldEngine** | **88.95** | **59.83** | **88.89** | **47.66** | **70.12** |
 
 **Key findings:**
-- Post-training on **rare logs** significantly outperforms supervised fine-tuning (62.56 vs 49.68 open-loop rare PDMS), demonstrating the advantage of reward-guided optimization over imitation.
-- Post-training on **common logs** provides limited benefit and even degrades closed-loop performance (success rate drops from 73.61% to 64.58%), confirming that long-tail event discovery is essential.
-- The full **WorldEngine** pipeline achieves the best closed-loop performance (**88.89%** success rate, **70.12** PDMS*), a **+15.28%** absolute improvement in success rate over the base model.
+- Post-training on **rare logs** substantially improves rare open-loop PDMS over supervised fine-tuning (**59.20 vs. 52.55**), but does not improve rare closed-loop SR, indicating that fixed rare logs alone are insufficient for robust interactive behaviour.
+- Post-training on **common logs** provides limited long-tail benefit and degrades rare closed-loop performance, reducing SR from **73.66%** to **69.63%** and PDMS$^\ast$ from **60.98** to **60.21**, confirming the importance of long-tail event discovery.
+- The full WorldEngine pipeline achieves the best overall rare closed-loop performance, with the highest SR (**88.89%**) and PDMS$^\ast$ (**70.12**). It improves rare closed-loop SR by **+15.23** percentage points and PDMS$^\ast$ by **+9.14** over the base model, while maintaining strong common open-loop performance.
 
 ### Qualitative Results — Closed-Loop Simulation on nuPlan
 
@@ -134,7 +137,7 @@ WorldEngine consists of two tightly coupled subsystems:
 - [x] Comprehensive documentation and usage guides
 - [x] Hugging Face / ModelScope dataset
 - [x] Open-source release (code, data, early pre-trained models)
-- [ ] arXiv preprint
+- [x] arXiv preprint
 - [ ] Behavior World Model integration
 - [ ] Stable pre-trained models
 
@@ -224,55 +227,18 @@ WorldEngine's simulation environments are powered by 3D Gaussian Splatting (MTGS
 ## Citation
 
 If any parts of our work help your research, please consider citing us and giving a star to our repository:
-
-If you use the Render Assets (MTGS), please also cite:
 ```bibtex
-@article{li2025mtgs,
-  title={MTGS: Multi-Traversal Gaussian Splatting},
-  author={Li, Tianyu and Qiu, Yihang and Wu, Zhenhua and Lindstr{\"o}m, Carl and Su, Peng and Nie{\ss}ner, Matthias and Li, Hongyang},
-  journal={arXiv preprint arXiv:2503.12552},
-  year={2025}
-}
-```
-If you use the augmented scenarios data, please cite as well:
-```bibtex
-@inproceedings{zhou2025nexus,
-  title={Decoupled Diffusion Sparks Adaptive Scene Generation},
-  author={Zhou, Yunsong and Ye, Naisheng and Ljungbergh, William and Li, Tianyu and Yang, Jiazhi and Yang, Zetong and Zhu, Hongzi and Petersson, Christoffer and Li, Hongyang},
-  booktitle={ICCV},
-  year={2025}
-}
-```
-```bibtex
-@article{li2025optimization,
-  title={Optimization-Guided Diffusion for Interactive Scene Generation},
-  author={Li, Shihao and Ye, Naisheng and Li, Tianyu and Chitta, Kashyap and An, Tuo and Su, Peng and Wang, Boyang and Liu, Haiou and Lv, Chen and Li, Hongyang},
-  journal={arXiv preprint arXiv:2512.07661},
-  year={2025}
-}
-```
-If you find AlgEngine well, please cite as well:
-```bibtex
-@ARTICLE{11353028,
-  author={Liu, Haochen and Li, Tianyu and Yang, Haohan and Chen, Li and Wang, Caojun and Guo, Ke and Tian, Haochen and Li, Hongchen and Li, Hongyang and Lv, Chen},
-  journal={IEEE Transactions on Pattern Analysis and Machine Intelligence}, 
-  title={Reinforced Refinement With Self-Aware Expansion for End-to-End Autonomous Driving}, 
+@misc{li2026worldengine,
+  title={World Engine: Towards the Era of Post-Training for Autonomous Driving}, 
+  author={Tianyu Li and Li Chen and Caojun Wang and Haochen Liu and Kashyap Chitta and Zhenjie Yang and Yuhang Lu and Naisheng Ye and Yihang Qiu and Yufei Wang and Luoxi Zou and Jiaxin Peng and Jin Pan and Zhaoyu Su and Andrei Bursuc and Shengbo Eben Li and Andreas Geiger and Peng Su and Hongyang Li},
   year={2026},
-  volume={48},
-  number={5},
-  pages={5774-5792},
-  keywords={Adaptation models;Self-aware;Autonomous vehicles;Pipelines;Planning;Training;Reinforcement learning;Uncertainty;Data models;Safety;End-to-end autonomous driving;reinforced finetuning;imitation learning;motion planning},
-  doi={10.1109/TPAMI.2026.3653866}}
+  eprint={2606.19836},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO},
+  url={https://arxiv.org/abs/2606.19836}, 
+}
 ```
-If you find data scaling infos helpful, please also cite:
-```bibtex
-@article{tian2025simscale,
-        title={SimScale: Learning to Drive via Real-World Simulation at Scale},
-        author={Haochen Tian and Tianyu Li and Haochen Liu and Jiazhi Yang and Yihang Qiu and Guang Li and Junli Wang and Yinfeng Gao and Zhang Zhang and Liang Wang and Hangjun Ye and Tieniu Tan and Long Chen and Hongyang Li},
-        journal={arXiv preprint arXiv:2511.23369},
-        year={2025}
-      }
-```
+
 
 ## Contributing
 
@@ -306,6 +272,65 @@ WorldEngine is developed by **Shanghai Innovation Institute (SII)** and **OpenDr
 - Algorithm Development Team
 
 We would like to thank all contributors and the open-source community for their support. -->
+
+
+## Acknowledgements
+
+WorldEngine builds on top of the following works. We sincerely thank the authors for their contributions:
+
+- **MTGS** — Multi-Traversal Gaussian Splatting, the scene reconstruction backbone powering our photorealistic simulation environments.
+  ```bibtex
+  @article{li2025mtgs,
+    title={MTGS: Multi-Traversal Gaussian Splatting},
+    author={Li, Tianyu and Qiu, Yihang and Wu, Zhenhua and Lindstr{\"o}m, Carl and Su, Peng and Nie{\ss}ner, Matthias and Li, Hongyang},
+    journal={arXiv preprint arXiv:2503.12552},
+    year={2025}
+  }
+  ```
+
+- **Nexus (Decoupled Diffusion)** — Decoupled Diffusion Sparks Adaptive Scene Generation, enabling our augmented scenario generation pipeline.
+  ```bibtex
+  @inproceedings{zhou2025nexus,
+    title={Decoupled Diffusion Sparks Adaptive Scene Generation},
+    author={Zhou, Yunsong and Ye, Naisheng and Ljungbergh, William and Li, Tianyu and Yang, Jiazhi and Yang, Zetong and Zhu, Hongzi and Petersson, Christoffer and Li, Hongyang},
+    booktitle={ICCV},
+    year={2025}
+  }
+  ```
+
+- **Optimization-Guided Diffusion** — Optimization-Guided Diffusion for Interactive Scene Generation, underpinning behaviour-driven scenario synthesis.
+  ```bibtex
+  @inproceedings{li2025optimization,
+    title={Optimization-Guided Diffusion for Interactive Scene Generation},
+    author={Li, Shihao and Ye, Naisheng and Li, Tianyu and Chitta, Kashyap and An, Tuo and Su, Peng and Wang, Boyang and Liu, Haiou and Lv, Chen and Li, Hongyang},
+    booktitle={ECCV},
+    year={2026}
+  }
+  ```
+
+- **AlgEngine (Reinforced Refinement)** — Reinforced Refinement with Self-Aware Expansion for End-to-End Autonomous Driving, the RL-based fine-tuning backbone of AlgEngine.
+  ```bibtex
+  @ARTICLE{liu2026r2se,
+    author={Liu, Haochen and Li, Tianyu and Yang, Haohan and Chen, Li and Wang, Caojun and Guo, Ke and Tian, Haochen and Li, Hongchen and Li, Hongyang and Lv, Chen},
+    journal={IEEE Transactions on Pattern Analysis and Machine Intelligence},
+    title={Reinforced Refinement With Self-Aware Expansion for End-to-End Autonomous Driving},
+    year={2026},
+    volume={48},
+    number={5},
+    pages={5774-5792},
+    doi={10.1109/TPAMI.2026.3653866}
+  }
+  ```
+
+- **SimScale** — Learning to Drive via Real-World Simulation at Scale, providing insights into large-scale simulation-based training.
+  ```bibtex
+  @article{tian2025simscale,
+    title={SimScale: Learning to Drive via Real-World Simulation at Scale},
+    author={Haochen Tian and Tianyu Li and Haochen Liu and Jiazhi Yang and Yihang Qiu and Guang Li and Junli Wang and Yinfeng Gao and Zhang Zhang and Liang Wang and Hangjun Ye and Tieniu Tan and Long Chen and Hongyang Li},
+    journal={arXiv preprint arXiv:2511.23369},
+    year={2025}
+  }
+  ```
 
 
 ## Related Resources

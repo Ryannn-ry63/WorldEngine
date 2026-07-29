@@ -71,7 +71,9 @@ finetune_yaml = [
 ]
 
 synthetic_folder_names = [
-    "e2e_vadv2_50pct_navtrain_50pct_collision_NR_250911"
+    "/path/to/synthetic/rollouts/collision",
+    "/path/to/synthetic/rollouts/ep_1pct",
+    "/path/to/synthetic/rollouts/off_road",
 ]
 
 model = dict(
@@ -253,7 +255,7 @@ model = dict(
         reward_shaping=True,
         use_lora=True,
         trans_use_lora=True,
-        rl_finetuning=True,
+        rl_finetuning=False,
         importance_sampling=True,
         orig_IL=True,
         rl_loss_weight=dict(

@@ -1,7 +1,5 @@
 """
-RLFT Rare Rollout: RL fine-tuning using synthetic rollouts (single source).
-Key: NavSimOpenSceneE2EFineTuneSynthetic dataset, customized_filter="v1".
-See docs/config_guide.md for full documentation.
+Base IL Training (70%): End-to-end NAVFormer with DiffusionDrive on 70% NavSim data.
 """
 import os
 
@@ -38,15 +36,17 @@ queue_length = 4  # each sequence contains `queue_length` frames.
 past_steps = 3
 fut_steps = 4
 
+
 ### planning ###
 planning_steps = 8
 use_col_optim = False
+
+
 
 # Other settings
 train_gt_iou_threshold=0.3
 
 # data path
-train_dataset_type = "NavSimOpenSceneE2EFineTuneSynthetic"
 dataset_type = "NavSimOpenSceneE2E"
 file_client_args = dict(backend="disk")
 
@@ -60,21 +60,26 @@ img_root_test = data_root + "sensor_blobs/test"
 ann_file_train = info_root + "nuplan_openscene_navtrain.pkl"
 ann_file_val = info_root + "nuplan_openscene_navtest.pkl"
 ann_file_test = info_root + "nuplan_openscene_navtest.pkl"
-nav_filter_path_train = "configs/navsim_splits/navtrain_split/navtrain_50pct.yaml"
-nav_filter_path_val = "configs/navsim_splits/navtest_split/navtest.yaml"
-nav_filter_path_test = "configs/navsim_splits/navtest_split/navtest.yaml"
-
-finetune_yaml = [
-    "configs/navsim_splits/navtrain_split/e2e_vadv2_50pct_rare/navtrain_50pct_collision.yaml",
-    "configs/navsim_splits/navtrain_split/e2e_vadv2_50pct_rare/navtrain_50pct_ep_1pct.yaml",
-    "configs/navsim_splits/navtrain_split/e2e_vadv2_50pct_rare/navtrain_50pct_off_road.yaml",
-]
-
-synthetic_folder_names = [
-    "/path/to/synthetic/rollouts/collision",
-    "/path/to/synthetic/rollouts/ep_1pct",
-    "/path/to/synthetic/rollouts/off_road",
-]
+nav_filter_path_train = os.path.join(WORLDENGINE_ROOT, "projects/AlgEngine/configs/navsim_splits/navtrain_split/navtrain_70pct.yaml")
+nav_filter_path_val = os.path.join(WORLDENGINE_ROOT, "projects/AlgEngine/configs/navsim_splits/navtest_split/navtest.yaml")
+nav_filter_path_test = os.path.join(WORLDENGINE_ROOT, "projects/AlgEngine/configs/navsim_splits/navtest_split/navtest.yaml")
+navsim_exp_root = os.getenv("NAVSIM_EXP_ROOT", os.path.join(os.path.dirname(WORLDENGINE_ROOT), "exp"))
+metric_cache_path_override = os.getenv(
+    "NAVSIM_METRIC_CACHE_PATH",
+    None,
+)
+metric_cache_path_train = os.getenv(
+    "NAVSIM_METRIC_CACHE_PATH_TRAIN",
+    metric_cache_path_override or os.path.join(navsim_exp_root, "metric_cache_trainval"),
+)
+metric_cache_path_val = os.getenv(
+    "NAVSIM_METRIC_CACHE_PATH_VAL",
+    metric_cache_path_override or os.path.join(navsim_exp_root, "metric_cache_navtest"),
+)
+metric_cache_path_test = os.getenv(
+    "NAVSIM_METRIC_CACHE_PATH_TEST",
+    metric_cache_path_override or metric_cache_path_val,
+)
 
 model = dict(
     type="NAVFormer",
@@ -86,7 +91,6 @@ model = dict(
     num_classes=len(class_names),
     vehicle_id_list=vehicle_id_list,
     pc_range=point_cloud_range,
-    lora_finetuning=True,
     img_backbone=dict(
         type="ResNet",
         depth=50,
@@ -108,7 +112,7 @@ model = dict(
     ),
     freeze_img_backbone=True,
     freeze_img_neck=True,
-    freeze_bn=True,
+    freeze_bn=False,
     freeze_bev_encoder=True,
     score_thresh=0.4,
     filter_score_thresh=0.35,
@@ -251,57 +255,31 @@ model = dict(
         loss_iou=dict(type="GIoULoss", loss_weight=0.0),
     ),
     planning_head=dict(
-        type='TrajScoringHeadRL',
-        reward_shaping=True,
-        use_lora=True,
-        trans_use_lora=True,
-        rl_finetuning=False,
-        importance_sampling=True,
-        orig_IL=True,
-        rl_loss_weight=dict(
-            bce=0.0,
-            rank=0.0,
-            PG=0.01,
-            entropy=1.0
-        ),
-
-        num_poses=40,
-        d_ffn=256 * 4,
-        d_model=256,
-        vocab_path=os.path.join(WORLDENGINE_ROOT, "data/alg_engine/test_8192_kmeans.npy"),
-        nhead=8,
-        nlayers=1,
-        num_commands=4,
-        transformer_decoder=dict(
-            type='BEVOnlyMotionTransformerDecoder',
-            pc_range=point_cloud_range,
-            embed_dims=_dim_,
-            num_layers=3,
-            transformerlayers=dict(
-                type='MotionTransformerAttentionLayer',
-                batch_first=True,
-                use_lora=True,
-                lora_rank=16,
-                attn_cfgs=[
-                    dict(
-                        type='MotionDeformableAttention',
-                        num_steps=planning_steps,
-                        embed_dims=_dim_,
-                        num_levels=1,
-                        num_heads=8,
-                        num_points=4,
-                        sample_index=-1,
-                        use_lora=True,
-                        lora_rank=16
-                    ),
-                ],
-
-                feedforward_channels=_ffn_dim_,
-                ffn_dropout=0.1,
-                operation_order=('cross_attn', 'norm', 'ffn', 'norm')),
-        ),
+        type='DiffusionPlanningHead',
+        num_poses=planning_steps,           # 8
+        d_model=_dim_,                      # 256
+        d_ffn=1024,                         # DiffusionDrive V2 tf_d_ffn
+        num_heads=8,
+        dropout=0.0,
+        num_bounding_boxes=30,              # DiffusionDrive V2 num_bounding_boxes
+        num_query_decoder_layers=3,         # DiffusionDrive V2 tf_num_layers
+        query_keyval_size=8,                # downsample BEV to 8x8 for the query decoder
+        num_anchors=20,                     # DiffusionDrive V2 ego_fut_mode
+        num_diff_decoder_layers=2,          # DiffusionDrive V2 stacked DiT layers
+        plan_anchor_path=os.path.join(WORLDENGINE_ROOT, "kmeans_navsim_traj_20.npy"),
+        score_mode='recompute',
         bev_h=bev_h_,
         bev_w=bev_w_,
+        bev_range_x=51.2,
+        bev_range_y=51.2,
+        num_train_timesteps=1000,
+        train_timestep_max=50,
+        inference_steps=2,
+        trunc_timesteps=8,
+        cls_loss_weight=10.0,
+        reg_loss_weight=8.0,
+        trajectory_loss_weight=12.0,
+        use_nerf=True,
     ),
     # model training and testing settings
     train_cfg=dict(
@@ -339,6 +317,7 @@ train_pipeline = [
             "sdc_planning",
             "sdc_planning_mask",
             "command",
+            # "can_bus", contained in the meta-keys
             "sdc_planning_world",
             "sdc_planning_past",
             "sdc_planning_mask_past",
@@ -350,15 +329,23 @@ train_pipeline = [
             "time_to_collision_within_bound",
             "comfort",
             "score",
-            "fail_mask",
         ],
     ),
 ]
 test_pipeline = [
-    dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True, file_client_args=file_client_args, img_root=img_root_test),
-    dict(type="ScaleMultiViewImage3D", scale=0.5),
+    dict(type="LoadMultiViewImageFromFilesWithDownsample", to_float32=True, img_root=img_root_test, downsample_factor=2),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="PadMultiViewImage", size_divisor=32),
+    dict(type='LoadAnnotations3D_E2E',
+         with_bbox_3d=False,
+         with_label_3d=False,
+         with_attr_label=False,
+
+         with_future_anns=False,
+         with_ins_inds_3d=False,
+         ins_inds_add_1=True, # ins_inds start from 1
+         ),
+
     dict(
         type="MultiScaleFlipAug3D",
         img_scale=(1920, 1080),
@@ -370,7 +357,6 @@ test_pipeline = [
             ),
             dict(
                 type="CustomCollect3D", keys=[
-                                            #############
                                             "img",
                                             "timestamp",
                                             "l2g_r_mat",
@@ -400,13 +386,12 @@ data = dict(
     samples_per_gpu=2,      # batch size
     workers_per_gpu=4,      # more workers do not increase speed
     train=dict(
-        type=train_dataset_type,
+        type=dataset_type,
         file_client_args=file_client_args,
         data_root=data_root,
         ann_file=ann_file_train,
         nav_filter_path=nav_filter_path_train,
-        customized_filter="v1",
-        folder_name=synthetic_folder_names,
+        metric_cache_path=metric_cache_path_train,
         pipeline=train_pipeline,
         classes=class_names,
         modality=input_modality,
@@ -420,9 +405,11 @@ data = dict(
         fut_steps=fut_steps,
         planning_steps=planning_steps,
         load_interval=1,
+        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
         box_type_3d="LiDAR",
         fix_can_bus_rotation=True,
-        finetune_yaml=finetune_yaml,
+        diffusiondrive_data_mode=True,
     ),
     val=dict(
         type=dataset_type,
@@ -432,6 +419,7 @@ data = dict(
         use_valid_flag=True,
         ann_file=ann_file_val,
         nav_filter_path=nav_filter_path_val,
+        metric_cache_path=metric_cache_path_val,
         pipeline=test_pipeline,
         patch_size=patch_size,
         canvas_size=canvas_size,
@@ -443,6 +431,7 @@ data = dict(
         eval_mod=[],
         planning_steps=planning_steps,
         fix_can_bus_rotation=True,
+        diffusiondrive_data_mode=True,
     ),
     test=dict(
         type=dataset_type,
@@ -452,6 +441,7 @@ data = dict(
         use_valid_flag=True,
         ann_file=ann_file_test,
         nav_filter_path=nav_filter_path_test,
+        metric_cache_path=metric_cache_path_test,
         pipeline=test_pipeline,
         patch_size=patch_size,
         canvas_size=canvas_size,
@@ -463,19 +453,20 @@ data = dict(
         modality=input_modality,
         eval_mod=[],
         fix_can_bus_rotation=True,
+        diffusiondrive_data_mode=True,
     ),
     shuffler_sampler=dict(type="DistributedGroupSampler"),
     nonshuffler_sampler=dict(type="DistributedSampler"),
 )
 optimizer = dict(
     type="AdamW",
-    lr=2e-4,
+    lr=6e-4,
     paramwise_cfg=dict(
         custom_keys={
             "img_backbone": dict(lr_mult=0.1),
         }
     ),
-    weight_decay=0.01,
+    weight_decay=1e-4,
 )
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 # learning policy
@@ -486,12 +477,12 @@ lr_config = dict(
     warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3,
 )
-total_epochs = 8
-evaluation = dict(interval=8, pipeline=test_pipeline)
+total_epochs = 100
+evaluation = dict(interval=10, pipeline=test_pipeline)
 runner = dict(type="EpochBasedRunner", max_epochs=total_epochs)
 log_config = dict(
     interval=10, hooks=[dict(type="TextLoggerHook"), dict(type="TensorboardLoggerHook")]
 )
-checkpoint_config = dict(interval=1, max_keep_ckpts=1)
-load_from = os.path.join(WORLDENGINE_ROOT, "data/alg_engine/ckpts/e2e_vadv2_50pct_ep8.pth")
+checkpoint_config = dict(interval=10, max_keep_ckpts=5)
+load_from = os.path.join(WORLDENGINE_ROOT, "data/alg_engine/ckpts/track_map_nuplan_r50_navtrain_100pct_bs1x8.pth")
 find_unused_parameters = True

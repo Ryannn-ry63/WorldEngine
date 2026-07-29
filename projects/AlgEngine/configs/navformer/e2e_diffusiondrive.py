@@ -57,9 +57,9 @@ img_root_test = data_root + "sensor_blobs/test"
 ann_file_train = info_root + "nuplan_openscene_navtrain.pkl"
 ann_file_val = info_root + "nuplan_openscene_navtest.pkl"
 ann_file_test = info_root + "nuplan_openscene_navtest.pkl"
-nav_filter_path_train = "configs/navsim_splits/navtrain_split/navtrain.yaml"
-nav_filter_path_val = "configs/navsim_splits/navtest_split/navtest.yaml"
-nav_filter_path_test = "configs/navsim_splits/navtest_split/navtest.yaml"
+nav_filter_path_train = os.path.join(WORLDENGINE_ROOT, "projects/AlgEngine/configs/navsim_splits/navtrain_split/navtrain.yaml")
+nav_filter_path_val = os.path.join(WORLDENGINE_ROOT, "projects/AlgEngine/configs/navsim_splits/navtest_split/navtest.yaml")
+nav_filter_path_test = os.path.join(WORLDENGINE_ROOT, "projects/AlgEngine/configs/navsim_splits/navtest_split/navtest.yaml")
 navsim_exp_root = os.getenv("NAVSIM_EXP_ROOT", os.path.join(os.path.dirname(WORLDENGINE_ROOT), "exp"))
 metric_cache_path_override = os.getenv(
     "NAVSIM_METRIC_CACHE_PATH",
@@ -263,7 +263,7 @@ model = dict(
         query_keyval_size=8,                # downsample BEV to 8x8 for the query decoder
         num_anchors=20,                     # DiffusionDrive V2 ego_fut_mode
         num_diff_decoder_layers=2,          # DiffusionDrive V2 stacked DiT layers
-        plan_anchor_path=os.path.join(WORLDENGINE_ROOT, "data/alg_engine/kmeans_navsim_traj_20.npy"),
+        plan_anchor_path=os.path.join(WORLDENGINE_ROOT, "kmeans_navsim_traj_20.npy"),
         score_mode='recompute',
         bev_h=bev_h_,
         bev_w=bev_w_,
@@ -275,6 +275,7 @@ model = dict(
         trunc_timesteps=8,
         cls_loss_weight=10.0,
         reg_loss_weight=8.0,
+        trajectory_loss_weight=12.0,
         use_nerf=True,
     ),
     # model training and testing settings
@@ -405,6 +406,7 @@ data = dict(
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
         box_type_3d="LiDAR",
         fix_can_bus_rotation=True,
+        diffusiondrive_data_mode=True,
     ),
     val=dict(
         type=dataset_type,
@@ -426,6 +428,7 @@ data = dict(
         eval_mod=[],
         planning_steps=planning_steps,
         fix_can_bus_rotation=True,
+        diffusiondrive_data_mode=True,
     ),
     test=dict(
         type=dataset_type,
@@ -447,19 +450,20 @@ data = dict(
         modality=input_modality,
         eval_mod=[],
         fix_can_bus_rotation=True,
+        diffusiondrive_data_mode=True,
     ),
     shuffler_sampler=dict(type="DistributedGroupSampler"),
     nonshuffler_sampler=dict(type="DistributedSampler"),
 )
 optimizer = dict(
     type="AdamW",
-    lr=2e-4,
+    lr=6e-4,
     paramwise_cfg=dict(
         custom_keys={
             "img_backbone": dict(lr_mult=0.1),
         }
     ),
-    weight_decay=0.01,
+    weight_decay=1e-4,
 )
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 # learning policy
@@ -470,12 +474,12 @@ lr_config = dict(
     warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3,
 )
-total_epochs = 8
-evaluation = dict(interval=8, pipeline=test_pipeline)
+total_epochs = 100
+evaluation = dict(interval=10, pipeline=test_pipeline)
 runner = dict(type="EpochBasedRunner", max_epochs=total_epochs)
 log_config = dict(
     interval=10, hooks=[dict(type="TextLoggerHook"), dict(type="TensorboardLoggerHook")]
 )
-checkpoint_config = dict(interval=1, max_keep_ckpts=1)
+checkpoint_config = dict(interval=10, max_keep_ckpts=5)
 load_from = os.path.join(WORLDENGINE_ROOT, "data/alg_engine/ckpts/track_map_nuplan_r50_navtrain_100pct_bs1x8.pth")
 find_unused_parameters = True
