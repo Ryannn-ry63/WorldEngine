@@ -1,5 +1,4 @@
 import copy
-import csv
 import os
 import pickle
 from typing import Dict, List
@@ -96,8 +95,6 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         else:
             self.pdm_path = None
             logger.warning(f"No pdm cache found for {os.path.basename(self.nav_filter_path)}")
-        self.metric_cache_path = metric_cache_path
-        self.metric_cache_dict = self.load_metric_cache_paths(metric_cache_path)
 
         # E2E specific parameters (previously from NuScenesE2EDataset)
         self.queue_length = queue_length
@@ -210,41 +207,6 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         raise FileNotFoundError(
             f'PDM score cache not found: {cache_file}'
         )
-
-    def load_metric_cache_paths(self, metric_cache_path):
-        if metric_cache_path is None:
-            return {}
-
-        root = Path(metric_cache_path)
-        if not root.exists():
-            logger.warning(f"Metric cache path does not exist: {root}")
-            return {}
-
-        metric_cache_dict = {}
-        metadata_dir = root / "metadata"
-        if metadata_dir.exists():
-            metadata_files = sorted(metadata_dir.glob("*.csv"))
-            if metadata_files:
-                cache_paths = []
-                with open(metadata_files[0], "r") as f:
-                    reader = csv.DictReader(f)
-                    if reader.fieldnames and "file_name" in reader.fieldnames:
-                        cache_paths = [row["file_name"] for row in reader if row.get("file_name")]
-                    else:
-                        f.seek(0)
-                        cache_paths = f.read().splitlines()[1:]
-                for cache_path in cache_paths:
-                    path = Path(cache_path)
-                    if not path.is_absolute():
-                        path = root / path
-                    metric_cache_dict[path.parent.name] = str(path)
-                logger.info(f"loaded metric cache paths of {len(metric_cache_dict)} tokens.")
-                return metric_cache_dict
-
-        for cache_path in root.rglob("metric_cache.pkl"):
-            metric_cache_dict[cache_path.parent.name] = str(cache_path)
-        logger.info(f"loaded metric cache paths of {len(metric_cache_dict)} tokens.")
-        return metric_cache_dict
 
     def __len__(self):
         return len(self.index_map)
@@ -926,8 +888,6 @@ class NavSimOpenSceneE2E(Custom3DDataset):
             next=info["sample_next"],  # str: OpenScene unique sample token
             lidar2global_rotation=info["lidar2global"][:3, :3],
         )
-        if info["token"] in self.metric_cache_dict:
-            input_dict["metric_cache_path"] = self.metric_cache_dict[info["token"]]
 
         input_dict = self.update_transform(input_dict=input_dict, index=index)
         input_dict = self.update_sensor(input_dict=input_dict, index=index)

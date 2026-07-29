@@ -53,7 +53,7 @@ model = dict(
         num_diff_decoder_layers=2,
         plan_anchor_path=os.path.join(
             WORLDENGINE_ROOT,
-            "data/alg_engine/kmeans_navsim_traj_20.npy",
+            "kmeans_navsim_traj_20.npy",
         ),
         reference_checkpoint=GRPO_REFERENCE_CKPT,
         score_mode="rollout",

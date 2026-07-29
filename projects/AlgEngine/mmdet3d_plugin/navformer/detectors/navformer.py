@@ -1,10 +1,6 @@
 import random
 import copy
 import math
-import lzma
-import os
-import inspect
-from collections import OrderedDict
 from typing import List
 import numpy as np
 import torch
@@ -65,27 +61,6 @@ def trace_parameters(output, model):
             print(name)
 
 import pickle
-try:
-    from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
-    from navsim.common.dataclasses import Trajectory
-    from navsim.evaluate.pdm_score import get_trajectory_as_array, pdm_score, transform_trajectory
-    from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
-    from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
-    _PDM_IMPORT_ERROR = None
-except ImportError as exc:
-    TrajectorySampling = None
-    Trajectory = None
-    get_trajectory_as_array = None
-    pdm_score = None
-    transform_trajectory = None
-    PDMSimulator = None
-    PDMScorer = None
-    _PDM_IMPORT_ERROR = exc
-
-try:
-    from navsim.traffic_agents_policies.log_replay_traffic_agents import LogReplayTrafficAgents
-except ImportError:
-    LogReplayTrafficAgents = None
 
 @DETECTORS.register_module()
 class NAVFormer(MVXTwoStageDetector):
@@ -229,13 +204,6 @@ class NAVFormer(MVXTwoStageDetector):
         self.test_track_instances = None
         self.l2g_r_mat = None
         self.l2g_t = None
-        self._pdm_simulator = None
-        self._pdm_scorer = None
-        self._pdm_traffic_agents_policy = None
-        self._pdm_model_sampling = None
-        self._pdm_proposal_sampling = None
-        self._metric_cache_cache = OrderedDict()
-        self._metric_cache_max_size = int(os.getenv("NAVFORMER_PDM_METRIC_CACHE_SIZE", "256"))
         self.gt_iou_threshold = gt_iou_threshold
         self.bev_h, self.bev_w = self.pts_bbox_head.bev_h, self.pts_bbox_head.bev_w
         self.freeze_bev_encoder = freeze_bev_encoder
@@ -930,7 +898,6 @@ class NAVFormer(MVXTwoStageDetector):
                 pdm_dict["all_trajectories_8"] = all_traj_8[batch_idx].detach().float().cpu().numpy()
             if poses_cls is not None:
                 pdm_dict["poses_cls"] = poses_cls[batch_idx].detach().float().cpu().numpy()
-            pdm_dict["metric_cache_path"] = img_metas[batch_idx][3].get("metric_cache_path")
 
             # Calculate ADE / FDE
             gt_traj = sdc_planning[0][batch_idx, 0, :, :2].cpu().numpy()  #[b, 1, 8, 3] -> [8, 2]
@@ -976,7 +943,6 @@ class NAVFormer(MVXTwoStageDetector):
                 "score": np.nan,
                 "chosen_ind": int(selected_indices[batch_idx]) if selected_indices is not None else -1,
                 "trajectory": traj_40[batch_idx],
-                "metric_cache_path": curr_meta.get("metric_cache_path"),
             }
             if traj_8 is not None:
                 pdm_dict["trajectory_8"] = traj_8[batch_idx]
@@ -1003,204 +969,6 @@ class NAVFormer(MVXTwoStageDetector):
             return_list.append(pdm_dict)
 
         return return_list
-
-    def _forward_test_recompute_pdm(self, plan_results, img_metas, sdc_planning, batch_size):
-        traj_40 = plan_results["trajectory"].detach().float().cpu().numpy()
-        traj_8 = plan_results.get("trajectory_8")
-        if traj_8 is not None:
-            traj_8 = traj_8.detach().float().cpu().numpy()
-        all_traj_40 = plan_results.get("all_trajectories")
-        if all_traj_40 is not None:
-            all_traj_40 = all_traj_40.detach().float().cpu().numpy()
-        all_traj_8 = plan_results.get("all_trajectories_8")
-        if all_traj_8 is not None:
-            all_traj_8 = all_traj_8.detach().float().cpu().numpy()
-        poses_cls = plan_results.get("poses_cls")
-        if poses_cls is not None:
-            poses_cls = poses_cls.detach().float().cpu().numpy()
-        selected_indices = plan_results.get("selected_indices")
-        if selected_indices is not None:
-            selected_indices = selected_indices.detach().cpu().numpy()
-        gt_traj_8 = sdc_planning[0][:, 0, :, :2].detach().float().cpu().numpy()
-        return_list = []
-
-        for batch_idx in range(batch_size):
-            curr_meta = img_metas[batch_idx][3]
-            token = curr_meta["sample_idx"]
-            pdm_result = self._score_generated_trajectory(curr_meta, traj_40[batch_idx])
-            pdm_values = self._pdm_result_to_dict(pdm_result)
-
-            pdm_dict = {
-                "token": token,
-                "no_at_fault_collisions": pdm_values["no_at_fault_collisions"],
-                "drivable_area_compliance": pdm_values["drivable_area_compliance"],
-                "ego_progress": pdm_values["ego_progress"],
-                "time_to_collision_within_bound": pdm_values["time_to_collision_within_bound"],
-                "comfort": pdm_values["comfort"],
-                "score": pdm_values["score"],
-                "chosen_ind": int(selected_indices[batch_idx]) if selected_indices is not None else -1,
-                "trajectory": traj_40[batch_idx],
-                "metric_cache_path": curr_meta.get("metric_cache_path"),
-            }
-            if traj_8 is not None:
-                pdm_dict["trajectory_8"] = traj_8[batch_idx]
-            if all_traj_40 is not None:
-                pdm_dict["all_trajectories"] = all_traj_40[batch_idx]
-            if all_traj_8 is not None:
-                pdm_dict["all_trajectories_8"] = all_traj_8[batch_idx]
-            if poses_cls is not None:
-                pdm_dict["poses_cls"] = poses_cls[batch_idx]
-
-            gt_traj = gt_traj_8[batch_idx]
-            pred_traj = pdm_dict["trajectory"][4::5, :2]
-            ade = np.mean(np.linalg.norm(pred_traj - gt_traj, axis=-1))
-            fde = np.linalg.norm(pred_traj[-1] - gt_traj[-1])
-            pdm_dict["ade_4s"] = ade
-            pdm_dict["fde_4s"] = fde
-
-            return_list.append(pdm_dict)
-
-        return return_list
-
-    def _score_generated_trajectory(self, curr_meta, traj_40):
-        self._init_pdm_recompute()
-        metric_cache_path = curr_meta.get("metric_cache_path")
-        if metric_cache_path is None:
-            token = curr_meta.get("sample_idx", "<unknown>")
-            raise KeyError(
-                f"metric_cache_path missing from img_metas for token {token}; "
-                "set metric_cache_path in the dataset config."
-            )
-
-        metric_cache = self._load_metric_cache(metric_cache_path)
-
-        model_trajectory = Trajectory(
-            poses=traj_40[4::5].astype(np.float32),
-            trajectory_sampling=self._pdm_model_sampling,
-        )
-        return self._call_pdm_score(
-            metric_cache=metric_cache,
-            model_trajectory=model_trajectory,
-            future_sampling=self._pdm_proposal_sampling,
-            simulator=self._pdm_simulator,
-            scorer=self._pdm_scorer,
-            traffic_agents_policy=self._pdm_traffic_agents_policy,
-        )
-
-    def _call_pdm_score(self, **kwargs):
-        signature = inspect.signature(pdm_score)
-        if "traffic_agents_policy" not in signature.parameters:
-            kwargs.pop("traffic_agents_policy", None)
-        try:
-            return pdm_score(**kwargs)
-        except AttributeError as exc:
-            if any(name in str(exc) for name in ("current_tracked_objects", "_detections_tracks")):
-                return self._call_pdm_score_without_traffic(**kwargs)
-            raise
-
-    def _call_pdm_score_without_traffic(
-        self,
-        metric_cache,
-        model_trajectory,
-        future_sampling,
-        simulator,
-        scorer,
-        **kwargs,
-    ):
-        initial_ego_state = metric_cache.ego_state
-        pred_trajectory = transform_trajectory(model_trajectory, initial_ego_state)
-
-        pdm_states = get_trajectory_as_array(
-            metric_cache.trajectory,
-            future_sampling,
-            initial_ego_state.time_point,
-        )
-        pred_states = get_trajectory_as_array(
-            pred_trajectory,
-            future_sampling,
-            initial_ego_state.time_point,
-        )
-        trajectory_states = np.concatenate([pdm_states[None, ...], pred_states[None, ...]], axis=0)
-        simulated_states = simulator.simulate_proposals(trajectory_states, initial_ego_state)
-
-        score_kwargs = dict(
-            states=simulated_states,
-            observation=metric_cache.observation,
-            centerline=metric_cache.centerline,
-            route_lane_ids=metric_cache.route_lane_ids,
-            drivable_area_map=metric_cache.drivable_area_map,
-        )
-        scorer_signature = inspect.signature(scorer.score_proposals)
-        if "map_parameters" in scorer_signature.parameters:
-            score_kwargs["map_parameters"] = getattr(metric_cache, "map_parameters", None)
-        if "human_past_trajectory" in scorer_signature.parameters:
-            score_kwargs["human_past_trajectory"] = getattr(metric_cache, "past_human_trajectory", None)
-
-        scores = scorer.score_proposals(**score_kwargs)
-        return scores[1] if isinstance(scores, list) else scores
-
-    def _pdm_result_to_dict(self, pdm_result):
-        if isinstance(pdm_result, tuple):
-            pdm_result = pdm_result[0]
-        if isinstance(pdm_result, list):
-            pdm_result = pdm_result[0]
-
-        if hasattr(pdm_result, "iloc"):
-            row = pdm_result.iloc[0]
-            return {
-                "no_at_fault_collisions": float(row["no_at_fault_collisions"]),
-                "drivable_area_compliance": float(row["drivable_area_compliance"]),
-                "ego_progress": float(row["ego_progress"]),
-                "time_to_collision_within_bound": float(row["time_to_collision_within_bound"]),
-                "comfort": float(row["comfort"] if "comfort" in row else row["history_comfort"]),
-                "score": float(row["score"] if "score" in row else row["pdm_score"]),
-            }
-
-        return {
-            "no_at_fault_collisions": float(pdm_result.no_at_fault_collisions),
-            "drivable_area_compliance": float(pdm_result.drivable_area_compliance),
-            "ego_progress": float(pdm_result.ego_progress),
-            "time_to_collision_within_bound": float(pdm_result.time_to_collision_within_bound),
-            "comfort": float(
-                pdm_result.comfort if hasattr(pdm_result, "comfort") else pdm_result.history_comfort
-            ),
-            "score": float(pdm_result.score if hasattr(pdm_result, "score") else pdm_result.pdm_score),
-        }
-
-    def _load_metric_cache(self, metric_cache_path):
-        if self._metric_cache_max_size <= 0:
-            with lzma.open(metric_cache_path, "rb") as f:
-                return pickle.load(f)
-
-        metric_cache = self._metric_cache_cache.get(metric_cache_path)
-        if metric_cache is not None:
-            self._metric_cache_cache.move_to_end(metric_cache_path)
-            return metric_cache
-
-        with lzma.open(metric_cache_path, "rb") as f:
-            metric_cache = pickle.load(f)
-
-        self._metric_cache_cache[metric_cache_path] = metric_cache
-        if len(self._metric_cache_cache) > self._metric_cache_max_size:
-            self._metric_cache_cache.popitem(last=False)
-        return metric_cache
-
-    def _init_pdm_recompute(self):
-        if self._pdm_simulator is not None:
-            return
-
-        if _PDM_IMPORT_ERROR is not None:
-            raise ImportError(
-                "PDM recompute requires NAVSIM and nuPlan PDM modules to be importable. "
-                "Check PYTHONPATH/NAVSIM_DEVKIT_ROOT before using score_mode='recompute'."
-            ) from _PDM_IMPORT_ERROR
-
-        self._pdm_model_sampling = TrajectorySampling(time_horizon=4, interval_length=0.5)
-        self._pdm_proposal_sampling = TrajectorySampling(num_poses=40, interval_length=0.1)
-        self._pdm_simulator = PDMSimulator(proposal_sampling=self._pdm_proposal_sampling)
-        self._pdm_scorer = PDMScorer(proposal_sampling=self._pdm_proposal_sampling)
-        if LogReplayTrafficAgents is not None:
-            self._pdm_traffic_agents_policy = LogReplayTrafficAgents(self._pdm_proposal_sampling)
 
     @auto_fp16(apply_to=("img", "points"))
     def forward_track_test(

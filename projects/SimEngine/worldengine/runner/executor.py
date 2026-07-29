@@ -77,10 +77,21 @@ def run_runners(envs: List[BaseEnv], worker: Union[WorkerPool, None], cfg: DictC
         reports = [run_simulation(env, cfg.exit_on_failure) for env in envs]
     else:
         logger.info(f"Starting {number_of_sims} simulations using {worker.__class__.__name__}!")
+        from psutil import cpu_count
+        total_cpus = cpu_count(logical=True)
+        effective_cpus = min(
+            cfg.number_of_cpus_allocated_per_simulation,
+            total_cpus // number_of_sims,
+        )
+        if effective_cpus < cfg.number_of_cpus_allocated_per_simulation:
+            logger.warning(
+                f"Reducing cpus_per_sim from {cfg.number_of_cpus_allocated_per_simulation} to {effective_cpus} "
+                f"({total_cpus} total CPUs / {number_of_sims} envs) to ensure all splits can be scheduled by Ray."
+            )
         reports: List[List[RunnerReport]] = worker.map(
             Task(fn=run_simulation,
                 num_gpus=cfg.number_of_gpus_allocated_per_simulation,
-                num_cpus=cfg.number_of_cpus_allocated_per_simulation,
+                num_cpus=effective_cpus,
                 ),
             envs
         )

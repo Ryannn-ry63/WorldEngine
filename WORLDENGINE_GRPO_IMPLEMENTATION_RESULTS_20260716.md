@@ -56,7 +56,7 @@
 
 ## 3. 新增文件
 
-- `projects/AlgEngine/configs/navformer/e2e_diffusiondrive_grpo.py`
+- `projects/AlgEngine/configs/diffusiondrive/e2e_diffusiondrive_grpo.py`
   - 独立 GRPO 配置。
   - `GRPO_REFERENCE_CKPT` 与 `GRPO_POLICY_CKPT` 分离。
   - 自动按 manifest 样本数限制单轮更新数。

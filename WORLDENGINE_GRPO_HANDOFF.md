@@ -24,7 +24,7 @@
 
 新增：
 
-- `projects/AlgEngine/configs/navformer/e2e_diffusiondrive_grpo.py`
+- `projects/AlgEngine/configs/diffusiondrive/e2e_diffusiondrive_grpo.py`
 - `projects/AlgEngine/mmdet3d_plugin/navformer/dense_heads/diffusion_grpo_utils.py`
 - `projects/AlgEngine/mmdet3d_plugin/navformer/dense_heads/diffusion_grpo_planning_head.py`
 - `projects/AlgEngine/mmdet3d_plugin/datasets/navsim_openscene_grpo_rollout.py`

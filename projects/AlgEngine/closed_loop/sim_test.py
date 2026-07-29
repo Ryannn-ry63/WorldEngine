@@ -178,7 +178,6 @@ def save_rollout_record(
         "all_trajectories",
         "all_trajectories_8",
         "poses_cls",
-        "metric_cache_path",
         "chosen_ind",
         "grpo_initial_sample",
         "grpo_transition_action",

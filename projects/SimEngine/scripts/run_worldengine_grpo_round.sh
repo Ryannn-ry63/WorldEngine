@@ -29,7 +29,7 @@ fi
 
 ALGENGINE_ROOT="$WORLDENGINE_ROOT/projects/AlgEngine"
 SIMENGINE_ROOT="$WORLDENGINE_ROOT/projects/SimEngine"
-CONFIG="$ALGENGINE_ROOT/configs/navformer/e2e_diffusiondrive_grpo.py"
+CONFIG="$ALGENGINE_ROOT/configs/diffusiondrive/e2e_diffusiondrive_grpo.py"
 MODEL_NAME="e2e_diffusiondrive_grpo_${POLICY_VERSION}"
 ROLLOUT_ROOT="$WORLDENGINE_ROOT/experiments/closed_loop_exps/$MODEL_NAME/${DATA_TYPE}_NR"
 ROUND_ROOT="$WORLDENGINE_ROOT/experiments/grpo_rounds/$POLICY_VERSION"
