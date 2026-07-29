@@ -24,6 +24,22 @@ from mmseg import __version__ as mmseg_version
 warnings.filterwarnings("ignore")
 
 
+def configure_h100_sdp_backend():
+    if os.environ.get("NAVFORMER_DISABLE_EFFICIENT_SDP", "0") != "1":
+        return
+
+    cuda_backends = getattr(torch.backends, "cuda", None)
+    if cuda_backends is None:
+        return
+
+    if hasattr(cuda_backends, "enable_flash_sdp"):
+        cuda_backends.enable_flash_sdp(False)
+    if hasattr(cuda_backends, "enable_mem_efficient_sdp"):
+        cuda_backends.enable_mem_efficient_sdp(False)
+    if hasattr(cuda_backends, "enable_math_sdp"):
+        cuda_backends.enable_math_sdp(True)
+    print("NAVFORMER_DISABLE_EFFICIENT_SDP=1: using math SDPA backend")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a detector')
@@ -95,6 +111,7 @@ def parse_args():
 
 
 def main():
+    configure_h100_sdp_backend()
     args = parse_args()
 
     cfg = Config.fromfile(args.config)
