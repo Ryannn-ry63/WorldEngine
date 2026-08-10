@@ -75,10 +75,50 @@ experiments/diffusiondrive/grpo_selector_v2/selection/selected_checkpoint.pth
 若不通过，任务仍技术成功，但 `selection.json` 状态为
 `CALIBRATION_GATE_FAIL`，不会伪造或启动正式闭环结果。
 
+## Calibration result and rollback anchor
+
+2026-08-10 的 scene-disjoint calibration gate 已 PASS：
+
+- selected：`T=1, lr=1e-3, KL=1e-3, epoch=32, train seed=0`；
+- mean top-1 PDM gain：`+0.010607`；
+- scene-bootstrap 95% CI：`[+0.004397, +0.017078]`；
+- noise seed 0/1/2：`+0.012574 / +0.008087 / +0.011161`；
+- selection disagreement：`30.92%`；
+- selected checkpoint SHA256：`1717fadcb52b33a3e4055cd4cf5256aa8e9f743df478bd5f57daf19febf17181`。
+
+该 selection checkpoint 和 `selection.json` 是 V2 的固定回退点。
+
 ## 后续决策
 
-通过本 gate 后才做三 seed paired openloop-navtest gate，然后才运行表格中的
-Openloop-navtest、Openloop-failures、Closedloop-NR、Closedloop-R。若本目标
-仍失败，再保持 DiT 冻结，进入 `candidate feature + normalized trajectory geometry`
-的 zero-init residual selector；不会直接把未解决的问题带到 rollout/rare 或
-WorldEngine 更复杂的闭环训练中。
+Calibration gate 已通过后，固定 `T=1, lr=1e-3, KL=1e-3, epoch=32`，不再用
+navtest 选择超参。seed 0 使用 selection checkpoint；seed 1/2 从同一 baseline、
+同一 train cache 独立打乱训练，并固定取 epoch 32。
+
+## Formal three-seed four-block evaluation
+
+三个任务可同时提交，每个任务固定使用 8 张 H100：
+
+```bash
+cd /inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
+./projects/AlgEngine/scripts/diffusiondrive/run_grpo_selector_v2_formal_seed_h100.sh 0
+./projects/AlgEngine/scripts/diffusiondrive/run_grpo_selector_v2_formal_seed_h100.sh 1
+./projects/AlgEngine/scripts/diffusiondrive/run_grpo_selector_v2_formal_seed_h100.sh 2
+```
+
+每个 seed 一次跑完 OpenLoop-navtest、OpenLoop-navtest_failures、ClosedLoop-NR、
+ClosedLoop-R。已有 V1 reference 只在 baseline SHA、eval seed 与四块计数一致时复用；
+V2 current 始终重新运行。seed 1/2 在同一任务中先完成短 replica 训练和只改 10 个
+selector tensor 的 checkpoint 审计。
+
+三个任务都 PASS 后执行 CPU 汇总：
+
+```bash
+python projects/AlgEngine/scripts/diffusiondrive/finalize_grpo_selector_v2_formal.py \
+  --v2-root experiments/diffusiondrive/grpo_selector_v2 \
+  --reference-root experiments/diffusiondrive/grpo_selector_formal \
+  --output experiments/diffusiondrive/grpo_selector_v2/formal/final/formal_three_seed_result.json
+```
+
+Finalizer 的 `PASS` 只表示 checkpoint、数据计数和 paired 结果完整，不表示性能显著。
+无论 V2 的正式增益大小，selection checkpoint 与正式结果都作为 immutable anchor；
+后续 V2.1 必须从新分支和新 artifact 目录开始，不能覆盖 V2。
