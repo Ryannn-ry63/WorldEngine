@@ -73,6 +73,23 @@ def main():
     if not nav_filter_path.is_file():
         raise FileNotFoundError(nav_filter_path)
     contract = cfg.selector_reward_contract
+    objective = cfg.model.planning_head.get(
+        "policy_objective", "clipped_reference_grpo"
+    )
+    temperature = float(
+        cfg.model.planning_head.get("policy_temperature", 1.0)
+    )
+    if objective not in {"clipped_reference_grpo", "exact_group_grpo"}:
+        raise RuntimeError(f"unsupported selector policy objective: {objective}")
+    if temperature <= 0.0:
+        raise RuntimeError("selector policy temperature must be positive")
+    if objective == "exact_group_grpo":
+        if contract.get("fixed_ratio_clip", True):
+            raise RuntimeError("V2 exact-group objective must disable fixed clipping")
+        if contract.get("policy_objective") != (
+            "exact_complete_action_expected_advantage"
+        ):
+            raise RuntimeError("V2 objective contract drifted")
     if contract.fixed_vocabulary_size is not None:
         raise RuntimeError("formal selector GRPO must reject fixed vocabularies")
     if not contract.generator_frozen:
@@ -145,6 +162,8 @@ def main():
         "trainable_current_selector_tensors": len(trainable),
         "max_reference_init_error": max_reference_error,
         "pi_old_equals_pi_ref": True,
+        "policy_objective": objective,
+        "policy_temperature": temperature,
         "max_epochs": cfg.runner.max_epochs,
     }
     print(json.dumps(report, sort_keys=True))

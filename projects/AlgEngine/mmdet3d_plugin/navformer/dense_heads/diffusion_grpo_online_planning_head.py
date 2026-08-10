@@ -102,6 +102,8 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         selector_layer: int = -1,
         reward_key: str = "score",
         policy_loss_weight: float = 1.0,
+        policy_objective: str = "clipped_reference_grpo",
+        policy_temperature: float = 1.0,
         clip_epsilon: float = 0.2,
         kl_weight: float = 1e-3,
         advantage_epsilon: float = 1e-6,
@@ -115,6 +117,17 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         super().__init__(*args, **kwargs)
         if not 0.0 <= clip_epsilon < 1.0:
             raise ValueError("clip_epsilon must be in [0, 1)")
+        supported_objectives = {
+            "clipped_reference_grpo",
+            "exact_group_grpo",
+        }
+        if policy_objective not in supported_objectives:
+            raise ValueError(
+                f"unsupported policy_objective={policy_objective!r}; "
+                f"expected one of {sorted(supported_objectives)}"
+            )
+        if policy_temperature <= 0.0:
+            raise ValueError("policy_temperature must be positive")
         if kl_weight < 0.0:
             raise ValueError("kl_weight must be non-negative")
 
@@ -128,6 +141,8 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         self.selector_layer = normalized_layer
         self.reward_key = reward_key
         self.policy_loss_weight = float(policy_loss_weight)
+        self.policy_objective = str(policy_objective)
+        self.policy_temperature = float(policy_temperature)
         self.clip_epsilon = float(clip_epsilon)
         self.kl_weight = float(kl_weight)
         self.advantage_epsilon = float(advantage_epsilon)
@@ -476,8 +491,12 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         if components.shape[:2] != rewards.shape:
             raise ValueError("candidate reward component alignment drifted")
 
-        current_masked = current_logits.masked_fill(~valid, -1e4)
-        reference_masked = reference_logits.masked_fill(~valid, -1e4)
+        current_masked = (current_logits / self.policy_temperature).masked_fill(
+            ~valid, -1e4
+        )
+        reference_masked = (
+            reference_logits / self.policy_temperature
+        ).masked_fill(~valid, -1e4)
         current_probability = F.softmax(current_masked, dim=-1)
         reference_probability = F.softmax(reference_masked, dim=-1)
         current_indices = current_masked.argmax(dim=-1)
@@ -595,7 +614,7 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         il_target=None,
         il_target_mask=None,
     ):
-        """Clipped GRPO with pi_old == pi_ref and no imitation loss."""
+        """Selector-only GRPO with pi_old == pi_ref and no imitation loss."""
         current_logits = result["selector_logits"].float()
         reference_logits = result["reference_selector_logits"].float().detach()
         if current_logits.shape != reference_logits.shape:
@@ -611,8 +630,12 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
             reward_std,
         ) = self._group_relative_advantages(rewards, valid)
 
-        current_masked = current_logits.masked_fill(~valid, -1e4)
-        reference_masked = reference_logits.masked_fill(~valid, -1e4)
+        current_masked = (current_logits / self.policy_temperature).masked_fill(
+            ~valid, -1e4
+        )
+        reference_masked = (
+            reference_logits / self.policy_temperature
+        ).masked_fill(~valid, -1e4)
         current_log_prob = F.log_softmax(current_masked, dim=-1)
         reference_log_prob = F.log_softmax(reference_masked, dim=-1)
         log_ratio = current_log_prob - reference_log_prob
@@ -620,21 +643,37 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         clipped_ratio = ratio.clamp(
             1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon
         )
-        surrogate = torch.minimum(
-            ratio * advantages, clipped_ratio * advantages
-        )
         current_probability = current_log_prob.exp()
         reference_probability = reference_log_prob.exp().detach()
-        # The dynamic candidates are the complete selector action set, not
-        # actions sampled from the selector. Evaluate the clipped surrogate
-        # exactly under pi_old == pi_ref instead of uniformly over candidates.
         policy_weight = (
             reference_probability * policy_mask.to(current_logits.dtype)
         )
         policy_weight = policy_weight / policy_weight.sum(
             dim=-1, keepdim=True
         ).clamp_min(self.advantage_epsilon)
-        policy_objective_per_group = (policy_weight * surrogate).sum(dim=-1)
+        if self.policy_objective == "clipped_reference_grpo":
+            surrogate = torch.minimum(
+                ratio * advantages, clipped_ratio * advantages
+            )
+            # V1 compatibility: evaluate the clipped surrogate exactly under
+            # pi_old == pi_ref over the complete dynamic action set.
+            policy_objective_per_group = (policy_weight * surrogate).sum(dim=-1)
+        elif self.policy_objective == "exact_group_grpo":
+            # All 20 candidates are available, so the importance-sampling
+            # expectation is exact:
+            #   sum_a pi_old(a) * pi(a)/pi_old(a) * A(a)
+            # == sum_a pi(a) * A(a).
+            # Avoiding the fixed V1 clip lets probability cross a sharp frozen
+            # reference ranking while preserving the same rewards/actions.
+            policy_objective_per_group = (
+                current_probability
+                * advantages
+                * policy_mask.to(current_logits.dtype)
+            ).sum(dim=-1)
+        else:  # guarded in __init__; keep failure local after deserialization.
+            raise RuntimeError(
+                f"unsupported policy objective: {self.policy_objective}"
+            )
         if active_group.any():
             policy_loss = -policy_objective_per_group[active_group].mean()
         else:
@@ -660,8 +699,13 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
                     current_logits.dtype
                 )
             ).sum(dim=-1)[active_group].mean()
+            advantage_weight = (
+                policy_weight
+                if self.policy_objective == "clipped_reference_grpo"
+                else current_probability
+            )
             advantage_abs_mean = (
-                policy_weight * advantages.abs()
+                advantage_weight * advantages.abs()
             ).sum(dim=-1)[active_group].mean()
 
             safe_rewards = torch.where(valid, rewards, torch.zeros_like(rewards))
@@ -779,6 +823,12 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
             "grpo.selector.policy_tv": policy_tv,
             "grpo.selector.ratio_mean": ratio_mean,
             "grpo.selector.clip_fraction": clip_fraction,
+            "grpo.selector.fixed_clip_applied": current_logits.new_tensor(
+                float(self.policy_objective == "clipped_reference_grpo")
+            ),
+            "grpo.selector.policy_temperature": current_logits.new_tensor(
+                self.policy_temperature
+            ),
             "grpo.selector.kl": kl,
             "grpo.selector.active_group_fraction": active_group.float().mean(),
             "grpo.selector.advantage_abs_mean": advantage_abs_mean,
