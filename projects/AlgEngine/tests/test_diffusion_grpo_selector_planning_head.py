@@ -93,9 +93,11 @@ def test_config_inherits_official_diffusiondrive_and_selects_new_head():
             / "e2e_diffusiondrive_grpo_selector.py"
         )
     )
-    assert cfg.model.planning_head.type == "DiffusionGRPOSelectorPlanningHead"
+    assert cfg.model.planning_head.type == "DiffusionGRPOOnlineSelectorPlanningHead"
     assert cfg.model.planning_head.num_anchors == 20
-    assert cfg.model.planning_head.train_all_selector_layers is False
+    assert cfg.selector_reward_contract.num_dynamic_candidates == 20
+    assert cfg.selector_reward_contract.pi_old_equals_pi_ref is True
+    assert cfg.selector_reward_contract.generator_frozen is True
     assert cfg.selector_reward_contract.reward_shape == "(B, 20)"
     assert cfg.load_from.endswith("diffusiondrive/e2e_diffusiondrive/epoch_100.pth")
 
