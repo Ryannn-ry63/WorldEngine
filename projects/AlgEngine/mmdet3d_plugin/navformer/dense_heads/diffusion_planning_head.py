@@ -394,6 +394,7 @@ class CustomTransformerDecoderLayer(nn.Module):
         time_embed,
         status_encoding,
         global_img=None,
+        return_traj_feature=False,
     ):
         traj_feature = self.cross_bev_attention(
             traj_feature, noisy_traj_points, bev_feature, bev_spatial_shape
@@ -417,6 +418,8 @@ class CustomTransformerDecoderLayer(nn.Module):
         poses_reg[..., :2] = poses_reg[..., :2] + noisy_traj_points
         # heading is the third channel; tanh * pi gives a bounded angle prediction
         poses_reg[..., 2] = poses_reg[..., 2].tanh() * np.pi
+        if return_traj_feature:
+            return poses_reg, poses_cls, traj_feature
         return poses_reg, poses_cls
 
 
@@ -443,25 +446,44 @@ class CustomTransformerDecoder(nn.Module):
         time_embed,
         status_encoding,
         global_img=None,
+        return_traj_features=False,
     ):
         poses_reg_list = []
         poses_cls_list = []
+        traj_feature_list = []
         traj_points = noisy_traj_points
         for layer in self.layers:
-            poses_reg, poses_cls = layer(
-                traj_feature,
-                traj_points,
-                bev_feature,
-                bev_spatial_shape,
-                agents_query,
-                ego_query,
-                time_embed,
-                status_encoding,
-                global_img,
-            )
+            if return_traj_features:
+                poses_reg, poses_cls, decoded_feature = layer(
+                    traj_feature,
+                    traj_points,
+                    bev_feature,
+                    bev_spatial_shape,
+                    agents_query,
+                    ego_query,
+                    time_embed,
+                    status_encoding,
+                    global_img,
+                    return_traj_feature=True,
+                )
+                traj_feature_list.append(decoded_feature)
+            else:
+                poses_reg, poses_cls = layer(
+                    traj_feature,
+                    traj_points,
+                    bev_feature,
+                    bev_spatial_shape,
+                    agents_query,
+                    ego_query,
+                    time_embed,
+                    status_encoding,
+                    global_img,
+                )
             poses_reg_list.append(poses_reg)
             poses_cls_list.append(poses_cls)
             traj_points = poses_reg[..., :2].clone().detach()
+        if return_traj_features:
+            return poses_reg_list, poses_cls_list, traj_feature_list
         return poses_reg_list, poses_cls_list
 
 
@@ -555,7 +577,7 @@ class DiffusionPlanningHead(nn.Module):
         # 2-D velocity + 2-D acceleration.
         self.status_embed = nn.Linear(8, d_model)
 
-        # (b) learnable queries: 1 ego + N agents (DiffusionDrive V2 line 37)
+        # (b) learnable queries: 1 ego + N agents (upstream DiffusionDrive line 37)
         self._query_embedding = nn.Embedding(num_bounding_boxes + 1, d_model)
 
         # (c) keyval positional embedding for (keyval_size^2 BEV tokens + 1 status token).

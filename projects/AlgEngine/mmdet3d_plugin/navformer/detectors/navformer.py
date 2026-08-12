@@ -723,6 +723,10 @@ class NAVFormer(MVXTwoStageDetector):
         planning_kwargs = {}
         if getattr(self.planning_head, "uses_navigation_goal", False):
             planning_kwargs["navigation_goal"] = sdc_planning[:, 0, 7, :2]
+        if getattr(self.planning_head, "requires_online_candidate_rewards", False):
+            planning_kwargs["sample_tokens"] = [
+                meta[self.queue_length - 1]["sample_idx"] for meta in img_metas
+            ]
 
         plan_results = self.planning_head.forward(
             bev_embed,
@@ -807,6 +811,10 @@ class NAVFormer(MVXTwoStageDetector):
             planning_kwargs["sample_tokens"] = [
                 meta[3]["sample_idx"] for meta in img_metas
             ]
+        if getattr(
+            self.planning_head, "requires_paired_inference_sample_tokens", False
+        ):
+            planning_kwargs["sample_tokens"] = [meta[3]["sample_idx"] for meta in img_metas]
 
         plan_results = self.planning_head.forward(
             bev_embed,
