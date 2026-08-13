@@ -8,11 +8,20 @@ def main():
     parser = argparse.ArgumentParser(description="Merge distributed reward simulation results.")
     parser.add_argument("--test_path", required=True)
     parser.add_argument("--react_type", required=True, help="Type of reaction (e.g., R, NR).")
+    parser.add_argument(
+        "--num-splits",
+        type=int,
+        default=8,
+        help="Number of split_N worker directories to merge (default: 8).",
+    )
 
     args = parser.parse_args()
 
     TEST_PATH = args.test_path
     REACT_TYPE = args.react_type
+    NUM_SPLITS = args.num_splits
+    if NUM_SPLITS < 1:
+        raise ValueError("--num-splits must be a positive integer")
 
     # test_path is now an absolute path from the calling script
     merged_base = TEST_PATH
@@ -29,7 +38,7 @@ def main():
         print("Merging plan idx CSV files...")
         merged_csv_path = os.path.join(merged_base, "plan_traj/plan_idx.csv")
         all_dfs = []
-        for i in range(8):
+        for i in range(NUM_SPLITS):
             split_csv = os.path.join(merged_base, f"split_{i}/plan_traj/plan_idx.csv")
             # Read all rows except header and last row (overall_average)
             df_split = pd.read_csv(split_csv)
@@ -45,7 +54,7 @@ def main():
     print("Merging CSV files...")
     merged_csv_path = os.path.join(merged_base, f"WE_output/openscene_format/all_scenes_pdm_averages_{REACT_TYPE}.csv")
     all_dfs = []
-    for i in range(8):
+    for i in range(NUM_SPLITS):
         split_csv = os.path.join(merged_base, f"split_{i}/WE_output/openscene_format/all_scenes_pdm_averages_{REACT_TYPE}.csv")
         df_split = pd.read_csv(split_csv, skipfooter=1, engine='python')
         all_dfs.append(df_split)
@@ -61,7 +70,7 @@ def main():
     # merge dense reward csv file
     merged_csv_path = os.path.join(merged_base, f"WE_output/openscene_format/all_scenes_pdm_pkl_paths_{REACT_TYPE}.csv")
     all_dfs = []
-    for i in range(8):
+    for i in range(NUM_SPLITS):
         split_csv = os.path.join(merged_base, f"split_{i}/WE_output/openscene_format/all_scenes_pdm_pkl_paths_{REACT_TYPE}.csv")
         # skip if dense reward not computed
         if not os.path.exists(split_csv):
@@ -105,7 +114,7 @@ def main():
                 os.makedirs(dst_dir, exist_ok=True)
                 _link_files(src_dir, dst_dir, pattern, symlink=use_symlink)
 
-    for i in range(8):
+    for i in range(NUM_SPLITS):
         merge_split_files(i)
 
     print("All operations completed successfully!")

@@ -68,6 +68,11 @@ COMPONENT_NAMES = (
 )
 
 
+def should_load_rollout_sidecar(current_step, num_history, buffer_size):
+    """Score only after the first planner action can have been published."""
+    return num_history <= current_step < num_history + buffer_size - 1
+
+
 def pairwise_official_scores(scorer: PDMScorer):
     """Recover official reference-vs-candidate scores from one scorer pass."""
     if scorer._multi_metrics is None or scorer._weighted_metrics is None:
@@ -398,7 +403,9 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
                 self.current_step
             )
         )
-        if self.current_step >= self.num_history + self.buffer_size - 1:
+        if not should_load_rollout_sidecar(
+            self.current_step, self.num_history, self.buffer_size
+        ):
             return None
 
         sidecar, sidecar_path = self._load_sidecar()

@@ -250,3 +250,145 @@ def test_rollout_record_and_schema_v3_cache_load(tmp_path):
     loaded, loaded_manifest = common.load_cache(cache_path, "train")
     assert loaded["source_kind"] == "base_policy_rollout"
     assert loaded_manifest["schema_version"] == 3
+
+
+def test_single_gpu_launcher_preserves_the_rollout_contract():
+    launcher = (
+        ALGENGINE_ROOT
+        / "scripts/diffusiondrive/run_grpo_selector_rollout_v1_1gpu_h100.sh"
+    ).read_text()
+    rollout = (
+        ALGENGINE_ROOT
+        / "scripts/diffusiondrive/run_grpo_selector_rollout_v1_h100.sh"
+    ).read_text()
+    merger = (
+        SIMENGINE_ROOT / "scripts/merge_simulation_results.py"
+    ).read_text()
+    assert "DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=1" in launcher
+    assert "DIFFUSIONDRIVE_ROLLOUT_GPU_COUNT=1" in launcher
+    assert 'split_id<ROLLOUT_GPU_COUNT' in rollout
+    assert '--num-splits "${ROLLOUT_GPU_COUNT}"' in rollout
+    assert 'default=8' in merger
+
+
+def test_merge_simulation_results_accepts_one_split(tmp_path, monkeypatch):
+    import importlib.util
+    import pandas as pd
+
+    split_root = tmp_path / "split_0"
+    plan_root = split_root / "plan_traj"
+    openscene_root = split_root / "WE_output/openscene_format"
+    record_root = openscene_root / "diffusiondrive_rollout_records"
+    plan_root.mkdir(parents=True)
+    record_root.mkdir(parents=True)
+    pd.DataFrame([{"token": "scene-a"}]).to_csv(
+        plan_root / "plan_idx.csv", index=False
+    )
+    pd.DataFrame(
+        [
+            {"token": "scene-a", "pdm_score": 0.5},
+            {"token": "overall_average", "pdm_score": 0.5},
+        ]
+    ).to_csv(openscene_root / "all_scenes_pdm_averages_NR.csv", index=False)
+    record_path = record_root / "scene-a_4_reward.pkl"
+    with record_path.open("wb") as stream:
+        pickle.dump(reward_record(), stream)
+
+    script = SIMENGINE_ROOT / "scripts/merge_simulation_results.py"
+    spec = importlib.util.spec_from_file_location("merge_one_split", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(script),
+            "--test_path",
+            str(tmp_path),
+            "--react_type",
+            "NR",
+            "--num-splits",
+            "1",
+        ],
+    )
+    module.main()
+
+    assert (tmp_path / "plan_traj/plan_idx.csv").is_file()
+    assert (
+        tmp_path
+        / "WE_output/openscene_format/diffusiondrive_rollout_records"
+        / record_path.name
+    ).is_file()
+
+
+def test_rollout_smoke_and_pilot_limit_input_scenes_deterministically():
+    from worldengine.runner.run_simulation import limit_input_scenes
+
+    scenes = {f"scene-{index}": {"index": index} for index in range(12)}
+    assert limit_input_scenes(scenes, None) is scenes
+    assert list(limit_input_scenes(scenes, 1)) == ["scene-0"]
+    assert list(limit_input_scenes(scenes, 8)) == [
+        f"scene-{index}" for index in range(8)
+    ]
+
+
+def test_dynamic_reward_waits_until_first_planner_action_exists():
+    from worldengine.manager.diffusiondrive_dynamic_reward_manager import (
+        should_load_rollout_sidecar,
+    )
+
+    assert not should_load_rollout_sidecar(2, num_history=4, buffer_size=9)
+    # Step 3 creates the fourth observation needed by the first planner
+    # forward; no sidecar can exist until that observation has been written.
+    assert not should_load_rollout_sidecar(3, num_history=4, buffer_size=9)
+    assert should_load_rollout_sidecar(4, num_history=4, buffer_size=9)
+    assert should_load_rollout_sidecar(11, num_history=4, buffer_size=9)
+    assert not should_load_rollout_sidecar(12, num_history=4, buffer_size=9)
+
+
+def test_rollout_execution_audit_rejects_failed_scenarios(tmp_path):
+    import audit_grpo_selector_rollout_execution as execution_audit
+
+    report_dir = tmp_path / "__WORKER_ID__/WE_output"
+    report_dir.mkdir(parents=True)
+    report = report_dir / "runner_report_test.json"
+    report.write_text(
+        '{"invalid": true}'
+    )
+    with __import__("pytest").raises(RuntimeError, match="invalid WorldEngine"):
+        execution_audit.load_reports(tmp_path)
+
+    report.write_text(
+        '[{"scenario_name": "scene-a", "log_name": "split_0", '
+        '"succeeded": false, "error_message": "sidecar missing"}]'
+    )
+    paths, rows = execution_audit.load_reports(tmp_path)
+    assert paths == [report]
+    assert rows[0]["error_message"] == "sidecar missing"
+    with __import__("pytest").raises(RuntimeError, match="sidecar missing"):
+        execution_audit.validate_reports(
+            rows, minimum_scenarios=1, maximum_scenarios=1
+        )
+
+
+def test_rollout_execution_audit_allows_one_filtered_pilot_scene():
+    import audit_grpo_selector_rollout_execution as execution_audit
+
+    rows = [{"succeeded": True} for _ in range(7)]
+    execution_audit.validate_reports(
+        rows, minimum_scenarios=7, maximum_scenarios=8
+    )
+    with __import__("pytest").raises(RuntimeError, match="minimum is 8"):
+        execution_audit.validate_reports(
+            rows, minimum_scenarios=8, maximum_scenarios=8
+        )
+
+
+def test_formal_collection_launcher_is_frozen_and_eight_gpu_only():
+    launcher = (WORLDENGINE_ROOT / "run_diffusiondrive_rollout_v1_collect_8h100.sh").read_text()
+    assert "formal-collection-ready-20260813" in launcher
+    assert "git status --porcelain --untracked-files=no" in launcher
+    assert 'exec "${LAUNCHER}" collect' in launcher
+    assert "DIFFUSIONDRIVE_EXPECTED_GPU_COUNT" not in launcher
+    assert "DIFFUSIONDRIVE_ROLLOUT_GPU_COUNT" not in launcher
+    assert "RUN_ID=r1full" in launcher
