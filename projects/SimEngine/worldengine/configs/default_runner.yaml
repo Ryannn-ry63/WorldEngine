@@ -11,6 +11,10 @@ defaults:
 
 debug_mode: true
 debug_scene_name: null
+# Optional deterministic input-scene cap used by rollout smoke/pilot gates.
+# The resulting rollout audit still decides whether enough valid records were
+# produced; null keeps the full dataset behavior used by existing jobs.
+max_successful_scenarios: null
 
 data_file_folder_path: 'data/sim_engine/scenarios/original/navtest_failures/'
 data_pkl_file_name: 'all_scenarios.pkl'                                   # Data file name

@@ -1,5 +1,6 @@
 import logging
 import pickle
+from itertools import islice
 
 import hydra
 from omegaconf import DictConfig
@@ -14,6 +15,18 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = '../configs'
 CONFIG_NAME = 'default_runner'
 
+
+def limit_input_scenes(scene_dict, maximum_scenarios):
+    """Deterministically cap smoke/pilot inputs before worker distribution."""
+    if maximum_scenarios is None:
+        return scene_dict
+    maximum_scenarios = int(maximum_scenarios)
+    if maximum_scenarios < 1:
+        raise ValueError("max_successful_scenarios must be positive or null")
+    if len(scene_dict) <= maximum_scenarios:
+        return scene_dict
+    return dict(islice(scene_dict.items(), maximum_scenarios))
+
 @hydra.main(config_path=CONFIG_PATH, config_name=CONFIG_NAME, version_base="1.2")
 def main(cfg: DictConfig) -> None:
     logger.info('WorldEngine is running...')
@@ -23,6 +36,16 @@ def main(cfg: DictConfig) -> None:
 
     # Construct simulations/environments
     scenes_dict = pickle.load(open(cfg.data_file_path, 'rb'))
+    original_scene_count = len(scenes_dict)
+    scenes_dict = limit_input_scenes(
+        scenes_dict, cfg.get("max_successful_scenarios")
+    )
+    logger.info(
+        "Selected %d/%d input scenes (max_successful_scenarios=%s)",
+        len(scenes_dict),
+        original_scene_count,
+        cfg.get("max_successful_scenarios"),
+    )
     envs = build_envs(cfg=cfg, worker=worker, scene_dict=scenes_dict)
 
     logger.info('Running simulation...')

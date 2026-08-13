@@ -26,6 +26,15 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/grpo_selector_h100_env.sh"
+ROLLOUT_GPU_COUNT="${DIFFUSIONDRIVE_ROLLOUT_GPU_COUNT:-8}"
+if [[ ! "${ROLLOUT_GPU_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "DIFFUSIONDRIVE_ROLLOUT_GPU_COUNT must be a positive integer" >&2
+    exit 2
+fi
+if [[ "${ROLLOUT_GPU_COUNT}" -ne "${GPU_COUNT}" ]]; then
+    echo "Rollout worker count ${ROLLOUT_GPU_COUNT} != visible GPU count ${GPU_COUNT}" >&2
+    exit 1
+fi
 export ALGENGINE_PYTHON=/root/miniconda3/envs/algengine/bin/python
 export SIMENGINE_PYTHON=/root/miniconda3/envs/simengine/bin/python
 export H100_SUPPORT_DIR="${SIMENGINE_ROOT}/scripts/diffusiondrive"
@@ -48,6 +57,10 @@ exec > >(tee -a "${LOG_FILE}") 2>&1
 
 CURRENT_STAGE=static_preflight
 trap 'rc=$?; echo "FAIL rollout-v1 stage=${CURRENT_STAGE} line=${LINENO} command=${BASH_COMMAND} exit=${rc}" >&2; echo "persistent_log: ${LOG_FILE}" >&2' ERR
+echo "runtime_algengine_python=${ALGENGINE_PYTHON}"
+echo "runtime_simengine_python=${SIMENGINE_PYTHON}"
+echo "runtime_diffusiondrive_root=${DIFFUSIONDRIVE_ROOT}"
+echo "runtime_nuplan_devkit_root=${NUPLAN_DEVKIT_ROOT}"
 for path in "${CONFIG}" "${CHECKPOINT}" "${SCENARIO_FILE}" "${WORLDENGINE_MMCV_EXTENSION}" "${WORLDENGINE_GSPLAT_EXTENSION}"; do
     [[ -f "${path}" ]] || { echo "Missing required file: ${path}" >&2; exit 1; }
 done
@@ -62,13 +75,14 @@ CURRENT_STAGE=cuda_preflight
 "${ALGENGINE_PYTHON}" "${H100_SUPPORT_DIR}/preflight_mmcv_cuda.py" \
     --extension "${WORLDENGINE_MMCV_EXTENSION}" --expected-capability sm_90 --all-visible
 "${SIMENGINE_PYTHON}" "${H100_SUPPORT_DIR}/preflight_gsplat_cuda.py" \
-    --extension "${WORLDENGINE_GSPLAT_EXTENSION}" --expected-capability sm_90 --ray-workers 8
+    --extension "${WORLDENGINE_GSPLAT_EXTENSION}" --expected-capability sm_90 \
+    --ray-workers "${ROLLOUT_GPU_COUNT}"
 "${ALGENGINE_PYTHON}" -c "from mmcv import Config; c=Config.fromfile('${CONFIG}'); assert c.model.planning_head.export_rollout_context; assert c.model.planning_head.online_reward is None; assert c.selector_rollout_contract.deployed_action_parity_required"
 "${SIMENGINE_PYTHON}" -c "from worldengine.manager.diffusiondrive_dynamic_reward_manager import expand_candidates_to_40; import numpy as np; assert expand_candidates_to_40(np.zeros((20,8,3))).shape == (20,40,3)"
 if [[ "${MODE}" == preflight ]]; then
     CURRENT_STAGE=complete
     trap - ERR
-    echo "PASS DiffusionDrive rollout-v1 H100 preflight; no rollout started"
+    echo "PASS DiffusionDrive rollout-v1 H100 preflight; GPUs=${ROLLOUT_GPU_COUNT}; no rollout started"
     exit 0
 fi
 if [[ -e "${ROLLOUT_ROOT}" ]]; then
@@ -139,7 +153,7 @@ run_planner() {
 }
 
 CURRENT_STAGE=algengine_clients
-for split_id in {0..7}; do
+for (( split_id=0; split_id<ROLLOUT_GPU_COUNT; split_id++ )); do
     run_planner "${split_id}" &
     planner_pids+=("$!")
 done
@@ -151,10 +165,27 @@ we_pid=""
 planner_pids=()
 trap - EXIT INT TERM
 
+CURRENT_STAGE=runner_report_audit
+RUNNER_AUDIT_ARGS=()
+if [[ "${MAX_SCENARIOS}" -gt 0 ]]; then
+    MINIMUM_SCENARIOS="${MAX_SCENARIOS}"
+    if [[ "${MODE}" == pilot ]]; then
+        # Dense-reward filtering may validly remove one too-short input scene.
+        MINIMUM_SCENARIOS="$((MAX_SCENARIOS - 1))"
+    fi
+    RUNNER_AUDIT_ARGS=(
+        --minimum-scenarios "${MINIMUM_SCENARIOS}"
+        --maximum-scenarios "${MAX_SCENARIOS}"
+    )
+fi
+"${ALGENGINE_PYTHON}" "${SCRIPT_DIR}/audit_grpo_selector_rollout_execution.py" \
+    --rollout-root "${ROLLOUT_ROOT}" "${RUNNER_AUDIT_ARGS[@]}"
+
 CURRENT_STAGE=merge
 cd "${SIMENGINE_ROOT}"
 "${SIMENGINE_PYTHON}" scripts/merge_simulation_results.py \
-    --test_path "${ROLLOUT_ROOT}" --react_type NR
+    --test_path "${ROLLOUT_ROOT}" --react_type NR \
+    --num-splits "${ROLLOUT_GPU_COUNT}"
 CURRENT_STAGE=audit
 "${ALGENGINE_PYTHON}" "${SCRIPT_DIR}/audit_grpo_selector_rollout_v1.py" \
     --rollout-root "${ROLLOUT_ROOT}" \
@@ -165,6 +196,6 @@ CURRENT_STAGE=audit
 
 CURRENT_STAGE=complete
 trap - ERR
-echo "PASS DiffusionDrive selector rollout-v1 mode=${MODE} seed=${ROLLOUT_SEED}"
+echo "PASS DiffusionDrive selector rollout-v1 mode=${MODE} seed=${ROLLOUT_SEED} GPUs=${ROLLOUT_GPU_COUNT}"
 echo "rollout_root: ${ROLLOUT_ROOT}"
 echo "persistent_log: ${LOG_FILE}"
