@@ -121,6 +121,7 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         candidate_noise_namespace: Optional[str] = None,
         scene_selector: Optional[Dict] = None,
         online_reward: Optional[Dict] = None,
+        export_rollout_context: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -174,6 +175,7 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         )
         self._active_sample_tokens = None
         self._candidate_noise_namespace = candidate_noise_namespace
+        self.export_rollout_context = bool(export_rollout_context)
 
         self._freeze_generator_and_open_selector()
         self.train(self.training)
@@ -458,6 +460,7 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         ego_query,
         agents_query,
         status_token,
+        context=None,
     ):
         self._ensure_reference_selector()
         with torch.no_grad():
@@ -467,9 +470,10 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         if self.scene_selector is None:
             current_logits = self._current_selector()(candidate_feature).squeeze(-1)
         else:
-            context = self._scene_selector_context(
-                candidates_8, bev_feature, ego_query, agents_query, status_token
-            )
+            if context is None:
+                context = self._scene_selector_context(
+                    candidates_8, bev_feature, ego_query, agents_query, status_token
+                )
             delta_logits = self.scene_selector(
                 candidate_feature.detach(), candidates_8.detach(), **context
             )
@@ -541,6 +545,11 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         candidates_8, candidate_feature = self._generate_frozen_candidates(
             bev_feature, ego_query, agents_query, status_token
         )
+        context = None
+        if self.export_rollout_context:
+            context = self._scene_selector_context(
+                candidates_8, bev_feature, ego_query, agents_query, status_token
+            )
         current_logits, reference_logits = self._selector_outputs(
             candidate_feature,
             candidates_8,
@@ -548,10 +557,30 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
             ego_query,
             agents_query,
             status_token,
+            context=context,
         )
-        return self._build_result(
+        result = self._build_result(
             candidates_8, current_logits, reference_logits
         )
+        if self.export_rollout_context:
+            if context is None:
+                raise RuntimeError("rollout context was not constructed")
+            # Detached snapshots of the exact action set and observation
+            # representation used by the deployed selector.  Normal formal
+            # evaluation keeps the original compact return value.
+            result["diffusiondrive_rollout_context"] = {
+                "schema_version": 1,
+                "candidate_features": candidate_feature.detach(),
+                "candidate_trajectories_8": candidates_8.detach(),
+                "route_bev_features": context["route_bev_features"].detach(),
+                "status_tokens": context["status_token"].detach(),
+                "ego_queries": context["ego_query"].detach(),
+                "agents_queries": context["agents_query"].detach(),
+                "reference_logits": reference_logits.detach(),
+                "current_logits": current_logits.detach(),
+                "selected_indices": result["selected_indices"].detach(),
+            }
+        return result
 
     @torch.no_grad()
     def selector_diagnostics_per_sample(self, result):

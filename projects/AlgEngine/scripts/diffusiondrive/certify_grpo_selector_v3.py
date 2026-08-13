@@ -109,7 +109,7 @@ def main():
     report = {
         "schema_version": 3,
         "status": "PASS",
-        "method": "scene_conditioned_exact_group_grpo",
+        "method": selection.get("method", "scene_conditioned_exact_group_grpo"),
         "selection": str(selection_path),
         "selection_sha256": common.sha256_file(selection_path),
         "certification_consumed": True,

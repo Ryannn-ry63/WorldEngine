@@ -831,6 +831,7 @@ class NAVFormer(MVXTwoStageDetector):
         use_online_pdm = getattr(self.planning_head, 'requires_online_pdm_scoring', False)
 
         return_list = []
+        rollout_context = plan_results.get("diffusiondrive_rollout_context")
         for batch_idx in range(b):
             chosen_idx = chosen_indices[batch_idx]
             if use_online_pdm:
@@ -862,6 +863,19 @@ class NAVFormer(MVXTwoStageDetector):
                 'chosen_ind': chosen_idx.item(),
                 'trajectory': plan_results['trajectory'][batch_idx].cpu().numpy(),
             }
+            if rollout_context is not None:
+                if rollout_context.get("schema_version") != 1:
+                    raise RuntimeError("DiffusionDrive rollout context schema drifted")
+                sample_context = {"schema_version": 1}
+                for key, value in rollout_context.items():
+                    if key == "schema_version":
+                        continue
+                    if not torch.is_tensor(value) or value.shape[0] != b:
+                        raise RuntimeError(
+                            f"invalid DiffusionDrive rollout tensor {key}"
+                        )
+                    sample_context[key] = value[batch_idx].detach().cpu().numpy()
+                pdm_dict["diffusiondrive_rollout_context"] = sample_context
 
             # Calculate ADE / FDE
             gt_traj = sdc_planning[0][batch_idx, 0, :, :2].cpu().numpy()  #[b, 1, 8, 3] -> [8, 2]

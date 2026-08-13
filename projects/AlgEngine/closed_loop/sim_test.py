@@ -6,6 +6,7 @@ import pickle
 import asyncio
 import logging
 import shutil
+import hashlib
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -25,6 +26,86 @@ from closed_loop.post_processor import ScorePostProcessor
 
 warnings.filterwarnings("ignore")
 WORLDENGINE_ROOT = os.getenv('WORLDENGINE_ROOT', os.path.abspath('.'))
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def save_diffusiondrive_rollout_sidecar(
+    result, cfg, file_monitor, planner_step, provenance
+):
+    """Atomically export the exact 20-candidate action set for SimEngine."""
+    output_dir = getattr(cfg.sim, 'diffusiondrive_rollout_sidecar_path', '')
+    if not output_dir:
+        return None
+    context = result.get('diffusiondrive_rollout_context')
+    if context is None:
+        raise RuntimeError(
+            'rollout sidecar was requested but the planning head exported no context'
+        )
+    required_shapes = {
+        'candidate_features': (20, 256),
+        'candidate_trajectories_8': (20, 8, 3),
+        'route_bev_features': (20, 8, 256),
+        'status_tokens': (1, 256),
+        'ego_queries': (1, 256),
+        'agents_queries': (30, 256),
+        'reference_logits': (20,),
+        'current_logits': (20,),
+        'selected_indices': (),
+    }
+    for key, shape in required_shapes.items():
+        value = np.asarray(context.get(key))
+        if value.shape != shape:
+            raise RuntimeError(
+                f'DiffusionDrive rollout {key} shape {value.shape} != {shape}'
+            )
+        if not np.isfinite(value).all():
+            raise RuntimeError(f'DiffusionDrive rollout {key} is non-finite')
+
+    selected_index = int(np.asarray(context['selected_indices']).item())
+    chosen_index = int(result['chosen_ind'])
+    if selected_index != chosen_index:
+        raise RuntimeError('rollout selected index disagrees with deployed action')
+    contract = cfg.get('selector_rollout_contract', {})
+    if contract.get('deployed_action_parity_required', False):
+        logits_error = float(np.max(np.abs(
+            np.asarray(context['current_logits'], dtype=np.float64)
+            - np.asarray(context['reference_logits'], dtype=np.float64)
+        )))
+        if logits_error > 1e-5:
+            raise RuntimeError(
+                f'base rollout residual selector is non-zero: {logits_error}'
+            )
+    else:
+        logits_error = None
+    payload = {
+        'schema_version': 1,
+        'record_type': 'diffusiondrive_closed_loop_candidate_context',
+        'scene_prefix': str(file_monitor.prefix),
+        'planner_step': int(planner_step),
+        'source_sample_token': str(result['token']),
+        'selected_index': selected_index,
+        'deployed_trajectory': np.asarray(result['trajectory'], dtype=np.float32),
+        'current_reference_logits_max_abs_error': logits_error,
+        **provenance,
+    }
+    for key in required_shapes:
+        payload[key] = np.asarray(context[key])
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_path = output_dir / f'{file_monitor.prefix}_{planner_step}.pkl'
+    temporary_path = final_path.with_suffix('.pkl.tmp')
+    with temporary_path.open('wb') as stream:
+        pickle.dump(payload, stream, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(temporary_path, final_path)
+    return final_path
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -100,7 +181,7 @@ def clean_related_files(cfg, logger):
                 if os.path.isdir(folder_path):
                     shutil.rmtree(folder_path)
 
-async def run_inference_loop(model, cfg, logger):
+async def run_inference_loop(model, cfg, logger, rollout_provenance):
     """async run inference loop"""
     MONITORED_FOLDER = cfg.sim.monitored_folder
     logger.info(f"MONITORED_FOLDER: {MONITORED_FOLDER}")
@@ -170,10 +251,17 @@ async def run_inference_loop(model, cfg, logger):
             )
             plan_result, plan_idx = post_processor.process(result)
 
-            # save result
-            tmp_path = os.path.join(save_path, f'{file_monitor.prefix}_{cfg.queue_length + scene_step}_tmp.npy')
+            # Publish the sidecar before the matching action.  The final plan
+            # rename is the synchronization signal consumed by SimEngine.
+            planner_step = cfg.queue_length + scene_step
+            tmp_path = os.path.join(save_path, f'{file_monitor.prefix}_{planner_step}_tmp.npy')
             np.save(tmp_path, plan_result)
-            os.rename(tmp_path, os.path.join(save_path, f'{file_monitor.prefix}_{cfg.queue_length + scene_step}.npy'))
+            sidecar_path = save_diffusiondrive_rollout_sidecar(
+                result, cfg, file_monitor, planner_step, rollout_provenance
+            )
+            os.rename(tmp_path, os.path.join(save_path, f'{file_monitor.prefix}_{planner_step}.npy'))
+            if sidecar_path is not None:
+                logger.info(f'Saved DiffusionDrive rollout sidecar {sidecar_path}')
 
             if value is not None:
                 np.save(
@@ -226,6 +314,13 @@ def main():
     args = parse_args()
 
     cfg = Config.fromfile(args.config)
+    rollout_provenance = {
+        'config_path': str(Path(args.config).expanduser().resolve()),
+        'config_sha256': sha256_file(args.config),
+        'checkpoint_path': str(Path(args.checkpoint).expanduser().resolve()),
+        'checkpoint_sha256': sha256_file(args.checkpoint),
+        'candidate_noise_namespace': None,
+    }
     if args.log_dir:
         time_postfix = time.strftime("%Y-%m-%d_%H-%M-%S")
         log_file = os.path.join(args.log_dir, f'mmdet_client_{time_postfix}.log')
@@ -249,6 +344,16 @@ def main():
 
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+    planning_head_cfg = cfg.model.get('planning_head', {})
+    rollout_provenance['candidate_noise_namespace'] = planning_head_cfg.get(
+        'candidate_noise_namespace'
+    )
+    rollout_provenance['resolved_config_sha256'] = hashlib.sha256(
+        cfg.pretty_text.encode('utf-8')
+    ).hexdigest()
+    rollout_provenance['code_sha'] = os.getenv(
+        'DIFFUSIONDRIVE_ROLLOUT_CODE_SHA'
+    )
     # import modules from string list.
     if cfg.get('custom_imports', None):
         from mmcv.utils import import_modules_from_strings
@@ -288,7 +393,7 @@ def main():
 
     # After the model is ready, run the asynchronous inference loop
     try:
-        asyncio.run(run_inference_loop(model, cfg, logger))
+        asyncio.run(run_inference_loop(model, cfg, logger, rollout_provenance))
     except KeyboardInterrupt:
         logger.info("Inference stopped by user")
     except Exception as e:

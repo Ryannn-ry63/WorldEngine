@@ -93,12 +93,17 @@ def main():
             (f"{openscene_base}/meta_datas", "*.pkl", False),
             (f"{openscene_base}/pdms_pkl", "*.pkl", False),
             (f"{openscene_base}/sensor_blobs", "*", True),
+            # This directory is absent for every existing algorithm.  When
+            # present, records are immutable and hard-linked like pdms_pkl.
+            (f"{openscene_base}/diffusiondrive_rollout_records", "*_reward.pkl", False),
         ]
 
         for subdir, pattern, use_symlink in link_tasks:
             src_dir = os.path.join(split_path, subdir)
             if os.path.isdir(src_dir):
-                _link_files(src_dir, os.path.join(merged_base, subdir), pattern, symlink=use_symlink)
+                dst_dir = os.path.join(merged_base, subdir)
+                os.makedirs(dst_dir, exist_ok=True)
+                _link_files(src_dir, dst_dir, pattern, symlink=use_symlink)
 
     for i in range(8):
         merge_split_files(i)
