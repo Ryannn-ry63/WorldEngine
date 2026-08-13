@@ -142,6 +142,11 @@ buffer_size: 9
 with_dense_reward_manager: false
 reward_sampling_poses: 8
 reward_buffer_size: 9
+# DiffusionDrive-only dynamic 20-candidate reward.  Defaults preserve every
+# existing WorldEngine algorithm and the shared 8192-vocabulary manager.
+diffusiondrive_dynamic_candidate_reward: false
+diffusiondrive_candidate_sidecar_path: null
+diffusiondrive_sidecar_timeout_s: 30.0
 
 # Resume functionality
 enable_resume: false

@@ -28,6 +28,10 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
+        "--method-name",
+        default="scene_conditioned_exact_group_grpo",
+    )
+    parser.add_argument(
         "--ablation",
         choices=("full", "feature_only", "feature_geometry", "feature_geometry_route"),
         default="full",
@@ -183,7 +187,7 @@ def main():
         torch.save(
             {
                 "schema_version": 3,
-                "method": "scene_conditioned_exact_group_grpo",
+                "method": args.method_name,
                 "scene_selector_state": {
                     key: value.detach().cpu() for key, value in model.state_dict().items()
                 },
@@ -237,7 +241,7 @@ def main():
     report = {
         "schema_version": 3,
         "status": "PASS",
-        "method": "scene_conditioned_exact_group_grpo",
+        "method": args.method_name,
         "ablation": args.ablation,
         "scene_selector_config": model_config,
         "temperature": args.temperature,

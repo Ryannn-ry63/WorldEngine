@@ -32,6 +32,12 @@ def main():
     parser.add_argument("--expected-selector-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--expected-method", default="scene_conditioned_exact_group_grpo"
+    )
+    parser.add_argument(
+        "--release-name", default="e2e_diffusiondrive_grpo_selector_v3"
+    )
     args = parser.parse_args()
 
     baseline = args.baseline.expanduser().resolve()
@@ -50,7 +56,7 @@ def main():
     selector_payload = torch.load(selector_path, map_location="cpu")
     if selector_payload.get("schema_version") != 3:
         raise RuntimeError("V3 selector payload schema drifted")
-    if selector_payload.get("method") != "scene_conditioned_exact_group_grpo":
+    if selector_payload.get("method") != args.expected_method:
         raise RuntimeError("V3 selector method drifted")
     selector_state = selector_payload.get("scene_selector_state")
     if not isinstance(selector_state, dict) or not selector_state:
@@ -78,7 +84,7 @@ def main():
     report = {
         "schema_version": 3,
         "status": "PASS",
-        "method": "e2e_diffusiondrive_grpo_selector_v3",
+        "method": args.release_name,
         "baseline": str(baseline),
         "baseline_sha256": baseline_sha,
         "scene_selector_state": str(selector_path),

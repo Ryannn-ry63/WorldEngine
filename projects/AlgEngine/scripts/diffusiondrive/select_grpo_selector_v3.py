@@ -16,6 +16,12 @@ def main():
     parser.add_argument("--trial-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--minimum-worst-seed-gain", type=float, default=-0.001)
+    parser.add_argument(
+        "--method-name", default="scene_conditioned_exact_group_grpo"
+    )
+    parser.add_argument("--minimum-delta-no-at-fault-collisions", type=float, default=float("-inf"))
+    parser.add_argument("--minimum-delta-drivable-area-compliance", type=float, default=float("-inf"))
+    parser.add_argument("--minimum-delta-time-to-collision", type=float, default=float("-inf"))
     args = parser.parse_args()
     trial_root = args.trial_root.expanduser().resolve()
     output = args.output.expanduser().resolve()
@@ -28,6 +34,8 @@ def main():
         report = json.loads(report_path.read_text())
         if report.get("status") != "PASS" or report.get("schema_version") != 3:
             raise RuntimeError(f"invalid V3 trial report: {report_path}")
+        if report.get("method") != args.method_name:
+            continue
         if report.get("ablation") != "full":
             continue
         for checkpoint in report["checkpoints"]:
@@ -60,6 +68,12 @@ def main():
         for row in candidates
         if row["mean_gain"] > 0.0
         and row["worst_seed_gain"] >= args.minimum_worst_seed_gain
+        and row["development_metrics"]["delta_no_at_fault_collisions"]
+        >= args.minimum_delta_no_at_fault_collisions
+        and row["development_metrics"]["delta_drivable_area_compliance"]
+        >= args.minimum_delta_drivable_area_compliance
+        and row["development_metrics"]["delta_time_to_collision_within_bound"]
+        >= args.minimum_delta_time_to_collision
     ]
     if not eligible:
         raise RuntimeError("no V3 checkpoint passed the development-only stability gate")
@@ -74,11 +88,16 @@ def main():
     payload = {
         "schema_version": 3,
         "status": "PASS",
-        "method": "scene_conditioned_exact_group_grpo",
+        "method": args.method_name,
         "selection_data": "navtrain_scene_disjoint_development_only",
         "certification_consumed": False,
         "ranking_rule": "mean_gain_minus_half_noise_seed_standard_deviation",
         "minimum_worst_seed_gain": args.minimum_worst_seed_gain,
+        "component_floors": {
+            "delta_no_at_fault_collisions": args.minimum_delta_no_at_fault_collisions,
+            "delta_drivable_area_compliance": args.minimum_delta_drivable_area_compliance,
+            "delta_time_to_collision_within_bound": args.minimum_delta_time_to_collision,
+        },
         "num_candidates": len(candidates),
         "num_eligible": len(eligible),
         "selected": selected,

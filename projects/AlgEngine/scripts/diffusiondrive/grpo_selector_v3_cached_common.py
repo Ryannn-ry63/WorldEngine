@@ -51,15 +51,20 @@ def load_cache(path, expected_split=None):
     if not path.is_file() or not manifest_path.is_file():
         raise FileNotFoundError(path if not path.is_file() else manifest_path)
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("status") != "PASS" or manifest.get("schema_version") != 2:
-        raise RuntimeError(f"context cache manifest did not pass schema v2: {manifest_path}")
+    schema_version = manifest.get("schema_version")
+    if manifest.get("status") != "PASS" or schema_version not in (2, 3):
+        raise RuntimeError(
+            f"context cache manifest did not pass schema v2/v3: {manifest_path}"
+        )
     if manifest.get("cache_sha256") != sha256_file(path):
         raise RuntimeError(f"context cache SHA256 mismatch: {path}")
     if expected_split is not None and manifest.get("split") != expected_split:
         raise RuntimeError(f"context cache split mismatch: {path}")
     cache = torch.load(path, map_location="cpu")
-    if cache.get("schema_version") != 2:
+    if cache.get("schema_version") != schema_version:
         raise RuntimeError(f"context cache payload schema drifted: {path}")
+    if schema_version == 3 and manifest.get("source_kind") != "base_policy_rollout":
+        raise RuntimeError(f"unknown schema-v3 cache source: {manifest_path}")
     count = len(cache["tokens"])
     required = {
         "candidate_features": (count, 20, 256),
