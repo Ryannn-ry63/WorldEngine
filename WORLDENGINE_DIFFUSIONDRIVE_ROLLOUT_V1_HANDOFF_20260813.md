@@ -109,7 +109,11 @@ negative，不是 rollout 数据失败。
   不再重复训练，也不会把恰好被 development 选中的 seed 1/2 错标为 seed 0。
 - 每个完成阶段均经过 SHA、schema、seed、count 审计；重新执行入口时，完整且审计通过的
   阶段会安全跳过，partial/invalid immutable 输出会 fail closed。
-- finish-ready tag：`diffusiondrive-selector-grpo-rollout-v1-finish-ready-20260814`。
+- finish-ready tag：`diffusiondrive-selector-grpo-rollout-v1-finish-ready-r2-20260814`。
+- 首次 finish attempt `20260814T035337Z` 在训练前的 optimizer preflight 失败：8 卡
+  进程未收缩可见设备，而该预检要求恰好 1 张卡。输入审计已 PASS，未生成 trial，未读取
+  certification。r2 将此命令固定为 `CUDA_VISIBLE_DEVICES=0`，失败目录原样归档后可
+  安全重提。
 
 ## GPU worker 约束
 
@@ -204,6 +208,13 @@ done
 
 ```bash
 ./run_diffusiondrive_rollout_v1_finish_8h100.sh preflight
+```
+
+若有单 H100，可在重排 8 卡前运行真实 cache 一 epoch smoke；它不读取 certification，
+输出写入独立 `local_finish_smoke` 目录：
+
+```bash
+./run_diffusiondrive_rollout_v1_finish_1h100_smoke.sh
 ```
 
 随后只提交一个 8-H100 任务；它会串行完成 development、一次性 certification 和三个

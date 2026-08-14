@@ -21,7 +21,8 @@ for seed in {0..8}; do
         echo "Missing rollout cache ${split}_seed${seed}" >&2; exit 1;
     }
 done
-"${ALGENGINE_PYTHON}" "${SCRIPT_DIR}/preflight_grpo_selector_v3_h100_optimizer.py"
+CUDA_VISIBLE_DEVICES=0 "${ALGENGINE_PYTHON}" \
+    "${SCRIPT_DIR}/preflight_grpo_selector_v3_h100_optimizer.py"
 
 pids=()
 for optimizer_seed in 0 1 2; do
