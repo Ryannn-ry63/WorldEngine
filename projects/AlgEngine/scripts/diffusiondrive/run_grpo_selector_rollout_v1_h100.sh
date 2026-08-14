@@ -192,6 +192,7 @@ CURRENT_STAGE=audit
     --expected-checkpoint-sha256 "${EXPECTED_SHA256}" \
     --expected-noise-namespace "${DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE}" \
     --minimum-records 8 \
+    --expected-workers "${ROLLOUT_GPU_COUNT}" \
     --output "${ROLLOUT_ROOT}/rollout_audit.json"
 
 CURRENT_STAGE=complete

@@ -48,6 +48,7 @@ def reward_record():
         "config_sha256": "config-file-sha",
         "resolved_config_sha256": "resolved-config-sha",
         "code_sha": "code-sha",
+        "sidecar_path": "/tmp/rollout/split_0/diffusiondrive_candidate_sidecars/scene-a_4.pkl",
         "reward_component_names": (
             "no_at_fault_collisions",
             "drivable_area_compliance",
@@ -252,6 +253,35 @@ def test_rollout_record_and_schema_v3_cache_load(tmp_path):
     assert loaded_manifest["schema_version"] == 3
 
 
+def test_rollout_provenance_allows_split_specific_resolved_configs():
+    from rollout_v1_provenance import validate_rollout_provenance
+
+    rows = []
+    for split_id in range(2):
+        row = reward_record()
+        row["resolved_config_sha256"] = f"resolved-split-{split_id}"
+        row["sidecar_path"] = (
+            f"/tmp/rollout/split_{split_id}/diffusiondrive_candidate_sidecars/scene.pkl"
+        )
+        rows.append(row)
+    provenance = validate_rollout_provenance(rows, expected_workers=2)
+    assert provenance["config_sha256"] == "config-file-sha"
+    assert provenance["code_sha"] == "code-sha"
+    assert provenance["resolved_config_sha256_by_worker"] == {
+        "split_0": "resolved-split-0",
+        "split_1": "resolved-split-1",
+    }
+
+
+def test_rollout_provenance_rejects_drift_within_one_worker():
+    from rollout_v1_provenance import validate_rollout_provenance
+
+    rows = [reward_record(), reward_record()]
+    rows[1]["resolved_config_sha256"] = "drifted-resolved-config"
+    with __import__("pytest").raises(RuntimeError, match="within workers"):
+        validate_rollout_provenance(rows, expected_workers=1)
+
+
 def test_single_gpu_launcher_preserves_the_rollout_contract():
     launcher = (
         ALGENGINE_ROOT
@@ -268,6 +298,7 @@ def test_single_gpu_launcher_preserves_the_rollout_contract():
     assert "DIFFUSIONDRIVE_ROLLOUT_GPU_COUNT=1" in launcher
     assert 'split_id<ROLLOUT_GPU_COUNT' in rollout
     assert '--num-splits "${ROLLOUT_GPU_COUNT}"' in rollout
+    assert '--expected-workers "${ROLLOUT_GPU_COUNT}"' in rollout
     assert 'default=8' in merger
 
 
