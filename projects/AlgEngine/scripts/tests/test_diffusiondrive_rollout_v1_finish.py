@@ -19,6 +19,11 @@ def test_formal_replicas_reuse_the_matching_development_optimizer_state():
     assert "--stage certification" in launcher
     assert "--stage formal --seed" in launcher
 
+    development = (
+        SCRIPT_ROOT / "run_grpo_selector_rollout_v1_development_h100.sh"
+    ).read_text()
+    assert 'CUDA_VISIBLE_DEVICES=0 "${ALGENGINE_PYTHON}"' in development
+
 
 def test_finish_pipeline_orders_all_stages_and_has_safe_stage_resume():
     launcher = (
@@ -43,7 +48,17 @@ def test_frozen_root_entry_point_supports_cpu_preflight_and_one_run_command():
     wrapper = (
         WORLDENGINE_ROOT / "run_diffusiondrive_rollout_v1_finish_8h100.sh"
     ).read_text()
-    assert "diffusiondrive-selector-grpo-rollout-v1-finish-ready-20260814" in wrapper
+    assert "diffusiondrive-selector-grpo-rollout-v1-finish-ready-r2-20260814" in wrapper
     assert 'MODE="${1:-run}"' in wrapper
     assert "--stage inputs" in wrapper
     assert 'exec "${PIPELINE}"' in wrapper
+
+
+def test_one_h100_smoke_uses_real_train_and_development_without_certification():
+    smoke = (
+        WORLDENGINE_ROOT / "run_diffusiondrive_rollout_v1_finish_1h100_smoke.sh"
+    ).read_text()
+    assert "DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=1" in smoke
+    assert "--stage inputs" in smoke
+    assert "--epochs 1 --checkpoint-epochs 1" in smoke
+    assert "cache/development_seed5/cache.pt" in smoke

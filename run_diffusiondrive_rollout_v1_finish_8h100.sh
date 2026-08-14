@@ -10,7 +10,7 @@ if [[ "${MODE}" != "run" && "${MODE}" != "preflight" ]]; then
 fi
 
 WORLDENGINE_ROOT=/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
-EXPECTED_TAG=diffusiondrive-selector-grpo-rollout-v1-finish-ready-20260814
+EXPECTED_TAG=diffusiondrive-selector-grpo-rollout-v1-finish-ready-r2-20260814
 SCRIPT_DIR="${WORLDENGINE_ROOT}/projects/AlgEngine/scripts/diffusiondrive"
 PIPELINE="${SCRIPT_DIR}/run_grpo_selector_rollout_v1_finish_h100.sh"
 AUDITOR="${SCRIPT_DIR}/audit_grpo_selector_rollout_v1_finish.py"
