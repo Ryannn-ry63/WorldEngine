@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from rollout_v1_provenance import validate_rollout_provenance
+
 
 def find_records(root):
     candidate = root / "WE_output/openscene_format/diffusiondrive_rollout_records"
@@ -26,6 +28,7 @@ def main():
     parser.add_argument("--expected-checkpoint-sha256", required=True)
     parser.add_argument("--expected-noise-namespace", required=True)
     parser.add_argument("--minimum-records", type=int, default=1)
+    parser.add_argument("--expected-workers", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     root = args.rollout_root.expanduser().resolve()
@@ -34,8 +37,7 @@ def main():
     selected_rewards = []
     oracle_rewards = []
     parity_errors = []
-    config_shas = set()
-    code_shas = set()
+    provenance_rows = []
     for path in find_records(root):
         with path.open("rb") as stream:
             row = pickle.load(stream)
@@ -64,20 +66,29 @@ def main():
         selected_rewards.append(float(rewards[selected]))
         oracle_rewards.append(float(rewards.max()))
         parity_errors.append(float(row["deployed_candidate_parity_max_abs_error"]))
-        config_shas.add(str(row["resolved_config_sha256"]))
-        code_shas.add(str(row.get("code_sha")))
+        provenance_rows.append(
+            {
+                key: row.get(key)
+                for key in (
+                    "config_sha256",
+                    "resolved_config_sha256",
+                    "code_sha",
+                    "sidecar_path",
+                )
+            }
+        )
     if len(seen) < args.minimum_records:
         raise RuntimeError(f"only {len(seen)} rollout records; expected >= {args.minimum_records}")
-    if len(config_shas) != 1 or len(code_shas) != 1 or "None" in code_shas:
-        raise RuntimeError("config/code provenance drifted within rollout")
+    provenance = validate_rollout_provenance(
+        provenance_rows, expected_workers=args.expected_workers
+    )
     payload = {
         "schema_version": 1,
         "status": "PASS",
         "source_kind": "base_policy_rollout",
         "checkpoint_sha256": args.expected_checkpoint_sha256,
         "noise_namespace": args.expected_noise_namespace,
-        "resolved_config_sha256": next(iter(config_shas)),
-        "code_sha": next(iter(code_shas)),
+        **provenance,
         "num_records": len(seen),
         "num_scenes": len(scenes),
         "frames_per_scene": dict(sorted(scenes.items())),

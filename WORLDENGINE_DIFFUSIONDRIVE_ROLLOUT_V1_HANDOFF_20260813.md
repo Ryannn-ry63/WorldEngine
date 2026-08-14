@@ -27,7 +27,7 @@ rollout state。V3 selector 架构、20-action set、PDM-only reward、exact-gro
 - V3 已通过独立 branch/tag/release 冻结，不会被 rollout 覆盖。
 - rollout v1 CPU/V3 contract tests：`22 passed`。
 - baseline SHA256 已核验。
-- 单 H100 preflight、smoke、pilot 已 PASS；未运行 full collection。
+- 单 H100 preflight、smoke、pilot 已 PASS；9 个 full collection seed 已完成并重新审计 PASS。
 - 本地已有两个无关 `.orig` 未跟踪文件，后续操作不要删除或覆盖。
 
 ### 单 H100 首次 smoke 记录
@@ -55,6 +55,32 @@ rollout state。V3 selector 架构、20-action set、PDM-only reward、exact-gro
 - runner gate 已修正为 pilot 接受 7--8 个有效场景；仍要求所有 report succeeded。
 - full collection 前必须先冻结/提交当前修复，使 rollout record 中的 Git code SHA 对应
   干净工作树；本次 smoke/pilot 属开发门验证，不作为正式训练数据。
+
+### 8-H100 full collection PASS 记录（2026-08-14）
+
+- seed `0--8` 的 WorldEngine rollout execution 均完成，merge 均成功；正式数据不需要重跑。
+- collection 数据代码提交：`dfbd348af6fc45773f4286e06b24acbf2cd77d0f`。
+- 每个 seed：412 scenes、3296 reward records、每个场景固定 8 帧、0 duplicate。
+- 9 个 seed 的 scene/step 文件集合完全相同；每个 seed 的 checkpoint、源配置和代码
+  provenance 唯一且一致。
+- 最大 deployed/candidate parity error 均为 `2.2888183579539145e-06`。
+- seed `0--8` 的 mean selected reward 分别为：`0.570983`、`0.576702`、
+  `0.567137`、`0.567231`、`0.567934`、`0.538768`、`0.574846`、`0.576979`、
+  `0.568807`。
+- 9 份 `rollout_audit.json` 均为 `PASS`。
+
+原始 8-H100 任务在仿真、runner audit 和 merge 成功后，全部仅在最后的 provenance audit
+报 `config/code provenance drifted within rollout`。根因是旧审计器错误地要求一个 seed 的
+所有记录共享同一个 `resolved_config_sha256`；实际 8 个 planner worker 的解析配置包含
+各自 `split_0--split_7` 输出路径，因此应当有 8 个不同哈希。全量检查确认每个 worker
+内部哈希稳定，源配置 SHA、checkpoint SHA 和 code SHA 全局一致。这是审计器 false
+negative，不是 rollout 数据失败。
+
+修复后的门控同时检查：全局唯一源配置 SHA、全局唯一 code SHA、恰好 8 个 worker，
+以及每个 worker 内唯一 resolved-config SHA；真实漂移仍会 fail closed。下游 cache builder
+也改用同一 provenance 合约，避免在 prepare-cache 阶段重复误报。CPU regression：
+`15 passed`；Python/Bash syntax：PASS。修复冻结 tag：
+`diffusiondrive-selector-grpo-rollout-v1-audit-fixed-20260814`。
 
 ## GPU worker 约束
 

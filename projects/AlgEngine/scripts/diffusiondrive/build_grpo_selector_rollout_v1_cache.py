@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from rollout_v1_provenance import validate_rollout_provenance
+
 
 COMPONENT_NAMES = (
     "no_at_fault_collisions",
@@ -140,6 +142,7 @@ def load_record(path, expected_sha, expected_namespace):
         "config_sha256": str(row["config_sha256"]),
         "resolved_config_sha256": str(row["resolved_config_sha256"]),
         "code_sha": str(row["code_sha"]),
+        "sidecar_path": str(row["sidecar_path"]),
         **values,
     }
 
@@ -194,13 +197,7 @@ def main():
         )
     if not ordered:
         raise RuntimeError("rollout split produced no cache rows")
-    config_shas = {row["config_sha256"] for row in ordered}
-    resolved_config_shas = {row["resolved_config_sha256"] for row in ordered}
-    code_shas = {row["code_sha"] for row in ordered}
-    if len(config_shas) != 1:
-        raise RuntimeError("rollout config file drifted within one seed")
-    if len(resolved_config_shas) != 1 or len(code_shas) != 1:
-        raise RuntimeError("resolved config/code drifted within one seed")
+    provenance = validate_rollout_provenance(ordered)
 
     cache = {
         "schema_version": 3,
@@ -251,9 +248,7 @@ def main():
         "num_candidates": 20,
         "checkpoint": str(checkpoint),
         "checkpoint_sha256": args.expected_baseline_sha256,
-        "config_sha256": next(iter(config_shas)),
-        "resolved_config_sha256": next(iter(resolved_config_shas)),
-        "code_sha": next(iter(code_shas)),
+        **provenance,
         "annotation_sha256": sha256_file(split_path),
         "split_manifest": str(split_path),
         "split_manifest_sha256": sha256_file(split_path),
