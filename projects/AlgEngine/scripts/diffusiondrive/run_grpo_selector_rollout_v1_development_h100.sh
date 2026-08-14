@@ -42,7 +42,16 @@ for optimizer_seed in 0 1 2; do
         > "${output}.stdout.log" 2>&1 &
     pids+=("$!")
 done
-for pid in "${pids[@]}"; do wait "${pid}"; done
+failed=0
+for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+        failed=1
+    fi
+done
+if (( failed != 0 )); then
+    echo "At least one rollout-v1 development optimizer trial failed" >&2
+    exit 1
+fi
 
 "${ALGENGINE_PYTHON}" "${SCRIPT_DIR}/select_grpo_selector_v3.py" \
     --trial-root "${TRIAL_ROOT}" --output "${SELECTION}" \

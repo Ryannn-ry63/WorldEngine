@@ -98,6 +98,19 @@ negative，不是 rollout 数据失败。
   `experiments/diffusiondrive/grpo_selector_rollout_v1/logs/20260814_prepare_cache_navtrain_50pct_collision_r1full_retry2_resume.log`。
 - cache-ready tag：`diffusiondrive-selector-grpo-rollout-v1-cache-ready-20260814`。
 
+### development/certification/formal 一体化入口（2026-08-14）
+
+- 下一阶段尚未运行；development、certification、formal 输出当前均为空。
+- 一个 8-H100 allocation 内依次执行 development、一次性 certification，以及 formal
+  seed 0、1、2，避免为五个阶段分别排队。
+- development 的三个 optimizer seed 在 GPU 0--2 并行训练；三个 formal 四块评测各自
+  使用全部 8 卡，因此在同一实例中顺序执行。
+- formal replica 直接复用 development 在选定 epoch 生成的 optimizer seed 0--2 状态；
+  不再重复训练，也不会把恰好被 development 选中的 seed 1/2 错标为 seed 0。
+- 每个完成阶段均经过 SHA、schema、seed、count 审计；重新执行入口时，完整且审计通过的
+  阶段会安全跳过，partial/invalid immutable 输出会 fail closed。
+- finish-ready tag：`diffusiondrive-selector-grpo-rollout-v1-finish-ready-20260814`。
+
 ## GPU worker 约束
 
 所有命令从 WorldEngine 根目录运行。每条 rollout 命令是一个独立的 8-H100 任务；只有
@@ -187,21 +200,22 @@ done
   navtrain_50pct_collision r1full
 ```
 
-之后依次运行 development 和一次性 certification：
+9 个 cache 就绪后，先在当前机器执行不占 GPU 的静态预检：
 
 ```bash
-./projects/AlgEngine/scripts/diffusiondrive/run_grpo_selector_rollout_v1_development_h100.sh
-./projects/AlgEngine/scripts/diffusiondrive/run_grpo_selector_rollout_v1_certify_h100.sh
+./run_diffusiondrive_rollout_v1_finish_8h100.sh preflight
 ```
 
-最后运行三个正式 replica；单个 8-H100 节点顺序执行：
+随后只提交一个 8-H100 任务；它会串行完成 development、一次性 certification 和三个
+formal replica：
 
 ```bash
-for seed in 0 1 2; do
-  ./projects/AlgEngine/scripts/diffusiondrive/run_grpo_selector_rollout_v1_formal_seed_h100.sh \
-    "${seed}" || exit 1
-done
+cd /inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
+./run_diffusiondrive_rollout_v1_finish_8h100.sh
 ```
+
+入口强制固定 tag、干净 tracked worktree 和恰好 8 张可见 H100。根据既有 V3 日志，
+三个 formal seed 顺序执行约需 4 小时，提交实例时建议预留至少 6 小时。
 
 ## 停止门
 
