@@ -423,3 +423,17 @@ def test_formal_collection_launcher_is_frozen_and_eight_gpu_only():
     assert "DIFFUSIONDRIVE_EXPECTED_GPU_COUNT" not in launcher
     assert "DIFFUSIONDRIVE_ROLLOUT_GPU_COUNT" not in launcher
     assert "RUN_ID=r1full" in launcher
+
+
+def test_prepare_cache_launcher_is_environment_pinned_and_immutable():
+    launcher = (
+        ALGENGINE_ROOT
+        / "scripts/diffusiondrive/run_grpo_selector_rollout_v1_prepare_cache.sh"
+    ).read_text()
+    assert 'WORLDENGINE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"' in launcher
+    assert (
+        'export PYTHONPATH="${ALGENGINE_ROOT}:${SIMENGINE_ROOT}:${PYTHONPATH:-}"'
+        in launcher
+    )
+    assert "Immutable split manifest exists" in launcher
+    assert '--expected-num-records "${expected_records}"' in launcher

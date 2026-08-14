@@ -82,6 +82,22 @@ negative，不是 rollout 数据失败。
 `15 passed`；Python/Bash syntax：PASS。修复冻结 tag：
 `diffusiondrive-selector-grpo-rollout-v1-audit-fixed-20260814`。
 
+### rollout split/cache PASS 记录（2026-08-14）
+
+- split manifest：`experiments/diffusiondrive/grpo_selector_rollout_v1/splits/navtrain_50pct_collision_r1full.json`。
+- split：train 348 scenes / 2784 records，development 43 / 344，certification 21 / 168。
+- 9 个 schema-v3 cache 全部构建并独立 SHA256 复核 PASS。
+- train seed0--2 cache 各约 296 MiB；development seed3--5 各约 37 MiB；
+  certification seed6--8 各约 18.3 MiB。
+- 每个 cache 的 checkpoint、source config、code、8-worker resolved-config provenance、
+  tensor 首维和 frozen split 记录数均通过门控。
+- prepare-cache 入口已改为从脚本位置解析真实仓库根目录，自动设置 AlgEngine/SimEngine
+  `PYTHONPATH`，在耗时扫描前检查 immutable split/cache 目标，并把 frozen split 的精确
+  record count 传给 builder。
+- 成功续建日志：
+  `experiments/diffusiondrive/grpo_selector_rollout_v1/logs/20260814_prepare_cache_navtrain_50pct_collision_r1full_retry2_resume.log`。
+- cache-ready tag：`diffusiondrive-selector-grpo-rollout-v1-cache-ready-20260814`。
+
 ## GPU worker 约束
 
 所有命令从 WorldEngine 根目录运行。每条 rollout 命令是一个独立的 8-H100 任务；只有
