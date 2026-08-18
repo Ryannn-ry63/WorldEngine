@@ -174,8 +174,8 @@ with (Path(output_dir) / "official.csv").open("w", newline="") as file:
     writer.writerow({"token": "average", "valid": True, "score": 0.5})
 PY
 
-# The wrapper has one supported topology: eight isolated scorer processes.
-# A legacy environment override must not change that topology.
+# One isolated scorer shard is supported for local smoke; formal defaults to
+# eight shards and uses the same merge path.
 NAVSIM_RESCORE_SHARDS=1 NAVSIM_DEVKIT_ROOT="$FAKE_NAVSIM_ROOT" \
     PYTHON_BIN=python bash "${ALGENGINE_ROOT}/scripts/e2e_navsim_official_rescore.sh" \
     "$FAKE_SUBMISSION" "$FAKE_CACHE" "$FAKE_OFFICIAL_OUTPUT" >/dev/null
