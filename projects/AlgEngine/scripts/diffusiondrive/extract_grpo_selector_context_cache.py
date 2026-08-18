@@ -222,10 +222,25 @@ def main():
     cache_path, cache = merge_parts(
         output_dir, world_size, args.expected_num_tokens, selector_state, selector_config
     )
+    algengine_root = Path(__file__).resolve().parents[2]
+    implementation_paths = (
+        Path(__file__).resolve(),
+        Path(base.__file__).resolve(),
+        algengine_root
+        / "mmdet3d_plugin/navformer/dense_heads/diffusiondrive_online_pdm_reward.py",
+        algengine_root
+        / "mmdet3d_plugin/navformer/dense_heads/diffusion_grpo_online_planning_head.py",
+        algengine_root
+        / "mmdet3d_plugin/navformer/dense_heads/diffusion_grpo_scene_selector.py",
+        algengine_root / "mmdet3d_plugin/navformer/detectors/navformer.py",
+    )
     manifest = {
         "schema_version": 2,
         "status": "PASS",
         "method": "frozen_diffusiondrive_scene_selector_context_cache",
+        "implementation_files": {
+            str(path): base.sha256_file(path) for path in implementation_paths
+        },
         "split": args.split,
         "noise_seed": args.noise_seed,
         "noise_namespace": namespace,

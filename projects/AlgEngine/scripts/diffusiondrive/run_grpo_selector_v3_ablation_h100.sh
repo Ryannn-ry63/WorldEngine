@@ -3,7 +3,8 @@ set -Eeo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/grpo_selector_h100_env.sh"
-ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3"
+. "${SCRIPT_DIR}/grpo_selector_v3_experiment_env.sh"
+ROOT="${V3_ROOT}"
 CACHE_ROOT="${ROOT}/cache"
 OUTPUT_ROOT="${ROOT}/ablation"
 TRIAL_ROOT="${OUTPUT_ROOT}/trials"

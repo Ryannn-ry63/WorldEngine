@@ -9,7 +9,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORLDENGINE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
-V3_ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3"
+. "${SCRIPT_DIR}/grpo_selector_v3_experiment_env.sh"
 PIPELINE_STATUS="${V3_ROOT}/overnight_pipeline/status.txt"
 CERT_STATUS="${V3_ROOT}/certification/status.txt"
 CHECKPOINT="${V3_ROOT}/certification/selected_checkpoint.pth"

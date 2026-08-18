@@ -57,8 +57,7 @@ def pairwise_official_scores(
         raise ValueError("expected one PDM reference and at least one candidate")
 
     multiplicative = multi.prod(axis=0)
-    gated_progress = progress_raw * multiplicative
-    reference_progress = gated_progress[0]
+    reference_progress = progress_raw[0]
     threshold = float(scorer._config.progress_distance_threshold)
     weights = np.asarray(
         scorer._config.weighted_metrics_array, dtype=np.float64
@@ -73,14 +72,13 @@ def pairwise_official_scores(
 
     for candidate_index in range(num_candidates):
         proposal_index = candidate_index + 1
-        candidate_progress = gated_progress[proposal_index]
+        candidate_progress = progress_raw[proposal_index]
         progress_denominator = max(reference_progress, candidate_progress)
         if progress_denominator > threshold:
             normalized_progress = candidate_progress / progress_denominator
         else:
-            normalized_progress = (
-                1.0 if multiplicative[proposal_index] != 0.0 else 0.0
-            )
+            normalized_progress = 1.0
+        normalized_progress *= multiplicative[proposal_index]
 
         weighted[WeightedMetricIndex.PROGRESS, proposal_index] = (
             normalized_progress

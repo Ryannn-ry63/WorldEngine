@@ -9,14 +9,14 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DIFFUSIONDRIVE_GRPO_CONFIG=/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine/projects/AlgEngine/configs/diffusiondrive/e2e_diffusiondrive_grpo_selector_v3.py
 . "${SCRIPT_DIR}/grpo_selector_h100_env.sh"
+. "${SCRIPT_DIR}/grpo_selector_v3_experiment_env.sh"
 
-V3_ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3"
 CACHE_ROOT="${V3_ROOT}/cache"
 SELECTION="${V3_ROOT}/sweep/selection.json"
 CERT_ROOT="${V3_ROOT}/certification"
 REFERENCE_SUMMARY="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_formal/formal_eval/e2e_diffusiondrive_reference_paired_s${SEED}/summary.json"
 FORMAL_ROOT="${V3_ROOT}/formal"
-FORMAL_MODEL="e2e_diffusiondrive_grpo_selector_v3_s${SEED}"
+FORMAL_MODEL="e2e_diffusiondrive_${DIFFUSIONDRIVE_GRPO_V3_EXPERIMENT_NAME}_s${SEED}"
 LOG_DIR="${FORMAL_ROOT}/logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/seed${SEED}_$(date -u +%Y%m%dT%H%M%SZ).log"

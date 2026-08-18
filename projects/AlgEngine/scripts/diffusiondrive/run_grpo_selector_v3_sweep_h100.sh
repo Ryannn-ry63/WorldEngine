@@ -3,9 +3,10 @@ set -Eeo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/grpo_selector_h100_env.sh"
+. "${SCRIPT_DIR}/grpo_selector_v3_experiment_env.sh"
 
-CACHE_ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3/cache"
-OUTPUT_ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3/sweep"
+CACHE_ROOT="${V3_ROOT}/cache"
+OUTPUT_ROOT="${V3_ROOT}/sweep"
 TRIAL_ROOT="${OUTPUT_ROOT}/trials"
 STATUS_FILE="${OUTPUT_ROOT}/status.txt"
 LOG_DIR="${OUTPUT_ROOT}/logs"

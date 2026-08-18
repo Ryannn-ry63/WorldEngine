@@ -9,7 +9,7 @@ set -u
 export WORLDENGINE_ROOT=/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
 export SIMENGINE_ROOT="${WORLDENGINE_ROOT}/projects/SimEngine"
 export ALGENGINE_ROOT="${WORLDENGINE_ROOT}/projects/AlgEngine"
-export ALGENGINE_ENV=/inspire/hdd/global_user/wangcaojun-240208020180/miniconda3/envs/algengine
+export ALGENGINE_ENV="${DIFFUSIONDRIVE_ALGENGINE_ENV_OVERRIDE:-/inspire/hdd/global_user/wangcaojun-240208020180/miniconda3/envs/algengine}"
 export ALGENGINE_PYTHON="${ALGENGINE_ENV}/bin/python"
 export ALGENGINE_TORCHRUN="${ALGENGINE_ENV}/bin/torchrun"
 export PATH="${ALGENGINE_ENV}/bin:${PATH}"
@@ -32,9 +32,9 @@ export DIFFUSIONDRIVE_GRPO_CONFIG="${DIFFUSIONDRIVE_GRPO_CONFIG:-${ALGENGINE_ROO
 export DIFFUSIONDRIVE_GRPO_BASELINE=/inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/repo-wcj/WorldEngine/experiments/diffusiondrive/e2e_diffusiondrive/epoch_100.pth
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 
-GPU_COUNT="$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)"
-if [[ "${GPU_COUNT}" -ne 8 ]]; then
-    echo "Expected exactly 8 visible H100 GPUs, found ${GPU_COUNT}" >&2
+EXPECTED_GPU_COUNT="${DIFFUSIONDRIVE_EXPECTED_GPU_COUNT:-8}"
+if [[ ! "${EXPECTED_GPU_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "DIFFUSIONDRIVE_EXPECTED_GPU_COUNT must be a positive integer" >&2
     return 1
 fi
 if [[ ! -f "${WORLDENGINE_MMCV_EXTENSION}" ]]; then
@@ -43,5 +43,10 @@ if [[ ! -f "${WORLDENGINE_MMCV_EXTENSION}" ]]; then
 fi
 if [[ ! -x "${ALGENGINE_PYTHON}" || ! -x "${ALGENGINE_TORCHRUN}" ]]; then
     echo "Missing senior algengine executables under ${ALGENGINE_ENV}" >&2
+    return 1
+fi
+GPU_COUNT="$("${ALGENGINE_PYTHON}" -c 'import torch; print(torch.cuda.device_count())')"
+if [[ "${GPU_COUNT}" -ne "${EXPECTED_GPU_COUNT}" ]]; then
+    echo "Expected exactly ${EXPECTED_GPU_COUNT} visible H100 GPU(s), found ${GPU_COUNT}" >&2
     return 1
 fi
