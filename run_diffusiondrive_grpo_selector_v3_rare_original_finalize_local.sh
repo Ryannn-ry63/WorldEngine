@@ -4,6 +4,14 @@ set -Eeuo pipefail
 WORLDENGINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${WORLDENGINE_ROOT}/projects/AlgEngine/scripts/diffusiondrive"
 ALGENGINE_PYTHON="${DIFFUSIONDRIVE_ALGENGINE_PYTHON_OVERRIDE:-/inspire/hdd/global_user/wangcaojun-240208020180/miniconda3/envs/algengine/bin/python}"
+ALGENGINE_ROOT="${WORLDENGINE_ROOT}/projects/AlgEngine"
+SIMENGINE_ROOT="${WORLDENGINE_ROOT}/projects/SimEngine"
+DIFFUSIONDRIVE_ROOT=/inspire/hdd/global_user/wangcaojun-240208020180/nry/DiffusionDrive
+MMCV_ROOT=/inspire/hdd/global_user/wangcaojun-240208020180/nry/mmcv
+NUPLAN_DEVKIT_ROOT=/inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/repo-wcj/nuplan-devkit
+SENIOR_NAVSIM_PARENT=/inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/repo-wcj/E2E/navsim_v1
+DIFFUSIONDRIVE_BOOTSTRAP="${SIMENGINE_ROOT}/scripts/diffusiondrive/algengine_worker_bootstrap"
+export PYTHONPATH="${DIFFUSIONDRIVE_BOOTSTRAP}:${ALGENGINE_ROOT}:${SIMENGINE_ROOT}:${DIFFUSIONDRIVE_ROOT}:${MMCV_ROOT}:${NUPLAN_DEVKIT_ROOT}:${SENIOR_NAVSIM_PARENT}:${PYTHONPATH:-}"
 PREPARE="${SCRIPT_DIR}/prepare_grpo_selector_v3_rare_original_data.py"
 SPLITTER="${SCRIPT_DIR}/split_grpo_selector_v3_rare_original.py"
 SOURCE_ROOT="${WORLDENGINE_ROOT}/experiments/grpo_sources/diffusiondrive_selector_rare_original_v1"
