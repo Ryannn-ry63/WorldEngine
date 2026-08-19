@@ -12,6 +12,8 @@ Environment:
   NAVSIM_EXP_ROOT          Fallback root containing metric_cache_navtest_v1
   PYTHON_BIN               Python executable (default: python)
   OPENBLAS_CORETYPE        OpenBLAS kernel target (default: Prescott)
+  NAVSIM_RESCORE_SHARDS    Number of isolated scorer processes (default: 8)
+  NAVSIM_RESCORE_SPLIT     Hydra split provenance (navtest or navtrain)
 EOF
 }
 
@@ -23,7 +25,16 @@ fi
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SUBMISSION=$1
 PYTHON_BIN=${PYTHON_BIN:-python}
-RESCORE_SHARDS=8
+RESCORE_SHARDS=${NAVSIM_RESCORE_SHARDS:-8}
+RESCORE_SPLIT=${NAVSIM_RESCORE_SPLIT:-navtest}
+if ! [[ "$RESCORE_SHARDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: NAVSIM_RESCORE_SHARDS must be a positive integer." >&2
+    exit 2
+fi
+if [[ "$RESCORE_SPLIT" != "navtest" && "$RESCORE_SPLIT" != "navtrain" ]]; then
+    echo "ERROR: NAVSIM_RESCORE_SPLIT must be navtest or navtrain." >&2
+    exit 2
+fi
 
 if [ ! -f "$SUBMISSION" ]; then
     echo "ERROR: submission not found: $SUBMISSION" >&2
@@ -75,6 +86,7 @@ echo "  submission:  $SUBMISSION"
 echo "  metric cache: $METRIC_CACHE"
 echo "  output:       $OUTPUT_DIR"
 echo "  shards:       $RESCORE_SHARDS"
+echo "  split:        $RESCORE_SPLIT"
 
 "$PYTHON_BIN" "${SCRIPT_DIR}/prepare_navsim_metric_cache_index.py" \
     --submission "$SUBMISSION" \
@@ -109,7 +121,7 @@ for SHARD_CACHE in "${SHARD_CACHE_DIRS[@]}"; do
         OPENBLAS_NUM_THREADS=1 \
         NUMEXPR_NUM_THREADS=1 \
         "$PYTHON_BIN" "$NAVSIM_OFFICIAL_SCRIPT" \
-            train_test_split=navtest \
+            train_test_split="$RESCORE_SPLIT" \
             worker=sequential \
             submission_file_path="$SUBMISSION" \
             metric_cache_path="$SHARD_CACHE" \

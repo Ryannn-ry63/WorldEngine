@@ -204,6 +204,12 @@ def main():
 
     rank, _ = get_dist_info()
     if rank == 0:
+        if args.out:
+            output_parent = osp.dirname(osp.abspath(args.out))
+            mmcv.mkdir_or_exist(output_parent)
+            mmcv.dump(outputs, args.out)
+            print(f"Saved inference results to {args.out}")
+
         kwargs = {} if args.eval_options is None else args.eval_options
         # kwargs['jsonfile_prefix'] = osp.join('work_dirs', args.config.split(
         #     '/')[-1].split('.')[-2], 'test', time.ctime().replace(' ', '_').replace(':', '_'))
