@@ -3,9 +3,9 @@ set -Eeo pipefail
 
 MODE="${1:-all}"
 case "${MODE}" in
-    preflight|mine|mine-seed0|mine-seed1|mine-seed2|cache|cache-lane0|cache-lane1|cache-lane2|sweep|train|eval|eval-paired-common|eval-rare-frozen|eval-rare-tuned|summarize|all) ;;
+    preflight|mine|mine-seed0|mine-seed1|mine-seed2|cache|cache-lane0|cache-lane1|cache-lane2|pipeline-lane0|pipeline-lane1|pipeline-lane2|sweep|train|eval|eval-paired-common|eval-rare-frozen|eval-rare-tuned|summarize|all) ;;
     *)
-        echo "Usage: $0 [preflight|mine|mine-seed{0,1,2}|cache|cache-lane{0,1,2}|sweep|train|eval|eval-{paired-common,rare-frozen,rare-tuned}|summarize|all]" >&2
+        echo "Usage: $0 [preflight|mine|mine-seed{0,1,2}|cache|cache-lane{0,1,2}|pipeline-lane{0,1,2}|sweep|train|eval|eval-{paired-common,rare-frozen,rare-tuned}|summarize|all]" >&2
         exit 2
         ;;
 esac
@@ -522,6 +522,131 @@ run_summary() {
     echo "PASS formal aggregate: ${FORMAL_ROOT}/rare_original_comparison.md"
 }
 
+pipeline_peer_failed() {
+    local status status_line
+    for status in "${ROOT}"/status_pipeline-lane{0,1,2}.txt; do
+        if [[ -f "${status}" ]]; then
+            status_line=""
+            IFS= read -r status_line < "${status}" || true
+            if [[ "${status_line}" == FAIL\ * ]]; then
+                echo "Parallel pipeline peer failed: ${status}" >&2
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+wait_for_pipeline_condition() {
+    local label="$1"
+    local predicate="$2"
+    local poll_seconds="${DIFFUSIONDRIVE_PIPELINE_POLL_SECONDS:-30}"
+    local timeout_seconds="${DIFFUSIONDRIVE_PIPELINE_WAIT_TIMEOUT_SECONDS:-86400}"
+    local started now
+    started="$(date +%s)"
+    while ! "${predicate}"; do
+        if pipeline_peer_failed; then
+            return 1
+        fi
+        now="$(date +%s)"
+        if (( now - started >= timeout_seconds )); then
+            echo "Timed out waiting for ${label} after ${timeout_seconds}s" >&2
+            return 1
+        fi
+        echo "WAIT ${label}: elapsed=$((now - started))s"
+        sleep "${poll_seconds}"
+    done
+    echo "READY ${label}"
+}
+
+all_cache_artifacts_present() {
+    local path seed
+    for seed in 0 1 2; do
+        for path in \
+            "${CACHE_ROOT}/full/train_seed${seed}/cache.pt" \
+            "${CACHE_ROOT}/full/train_seed${seed}/manifest.json" \
+            "${CACHE_ROOT}/tuning/train_seed${seed}/cache.pt" \
+            "${CACHE_ROOT}/tuning/train_seed${seed}/manifest.json" \
+            "${CACHE_ROOT}/tuning/development_seed$((seed + 3))/cache.pt" \
+            "${CACHE_ROOT}/tuning/development_seed$((seed + 3))/manifest.json" \
+            "${CACHE_ROOT}/tuning/certification_seed$((seed + 6))/cache.pt" \
+            "${CACHE_ROOT}/tuning/certification_seed$((seed + 6))/manifest.json"; do
+            [[ -f "${path}" ]] || return 1
+        done
+    done
+}
+
+all_training_ready() {
+    local family seed tuned_epoch
+    for family in paired_common rare_frozen rare_tuned; do
+        for seed in 0 1 2; do
+            [[ -f "${MODEL_ROOT}/${family}/seed${seed}/train/report.json" \
+                && -f "${MODEL_ROOT}/${family}/seed${seed}/checkpoint.pth" \
+                && -f "${MODEL_ROOT}/${family}/seed${seed}/checkpoint_manifest.json" \
+                && -f "${MODEL_ROOT}/${family}/seed${seed}/checkpoint_audit.json" ]] \
+                || return 1
+        done
+    done
+    [[ -f "${SWEEP_ROOT}/selection.json" ]] || return 1
+    tuned_epoch="$(json_get "${SWEEP_ROOT}/selection.json" selected.epoch)"
+    for seed in 0 1 2; do
+        training_ready paired_common "${seed}" \
+            scene_conditioned_exact_group_grpo_v3_paired_common_v1 paired_common 16 \
+            || return 1
+        training_ready rare_frozen "${seed}" \
+            scene_conditioned_exact_group_grpo_v3_rare_original_v1 rare_balanced 16 \
+            || return 1
+        training_ready rare_tuned "${seed}" \
+            scene_conditioned_exact_group_grpo_v3_rare_original_tuned_v1 rare_balanced "${tuned_epoch}" \
+            || return 1
+    done
+}
+
+all_evaluations_ready() {
+    local family seed
+    for family in paired_common rare_frozen rare_tuned; do
+        for seed in 0 1 2; do
+            evaluation_ready "${family}" "${seed}" || return 1
+        done
+    done
+}
+
+run_pipeline_lane() {
+    local lane="$1"
+    run_cache_lane "${lane}"
+    case "${lane}" in
+        0)
+            CURRENT_STAGE=pipeline_wait_all_caches
+            wait_for_pipeline_condition all_cache_artifacts all_cache_artifacts_present
+            CURRENT_STAGE=pipeline_validate_all_caches
+            run_caches
+            CURRENT_STAGE=pipeline_sweep
+            run_sweep
+            CURRENT_STAGE=pipeline_training
+            run_training
+            CURRENT_STAGE=pipeline_eval_paired_common
+            run_evaluation_family paired_common
+            CURRENT_STAGE=pipeline_wait_all_evaluations
+            wait_for_pipeline_condition all_formal_evaluations all_evaluations_ready
+            CURRENT_STAGE=pipeline_summary
+            run_summary
+            ;;
+        1)
+            CURRENT_STAGE=pipeline_wait_training
+            wait_for_pipeline_condition formal_training all_training_ready
+            CURRENT_STAGE=pipeline_eval_rare_frozen
+            run_evaluation_family rare_frozen
+            ;;
+        2)
+            CURRENT_STAGE=pipeline_wait_training
+            wait_for_pipeline_condition formal_training all_training_ready
+            CURRENT_STAGE=pipeline_eval_rare_tuned
+            run_evaluation_family rare_tuned
+            ;;
+    esac
+    echo "PASS combined pipeline lane ${lane}"
+}
+
 case "${MODE}" in
     preflight)
         run_preflight
@@ -541,6 +666,10 @@ case "${MODE}" in
     cache-lane0|cache-lane1|cache-lane2)
         run_preflight
         run_cache_lane "${MODE#cache-lane}"
+        ;;
+    pipeline-lane0|pipeline-lane1|pipeline-lane2)
+        run_preflight
+        run_pipeline_lane "${MODE#pipeline-lane}"
         ;;
     sweep)
         run_preflight
