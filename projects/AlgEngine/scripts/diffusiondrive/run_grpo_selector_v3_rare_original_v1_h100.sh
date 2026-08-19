@@ -3,9 +3,9 @@ set -Eeo pipefail
 
 MODE="${1:-all}"
 case "${MODE}" in
-    preflight|mine|cache|sweep|train|eval|summarize|all) ;;
+    preflight|mine|mine-seed0|mine-seed1|mine-seed2|cache|cache-lane0|cache-lane1|cache-lane2|sweep|train|eval|eval-paired-common|eval-rare-frozen|eval-rare-tuned|summarize|all) ;;
     *)
-        echo "Usage: $0 [preflight|mine|cache|sweep|train|eval|summarize|all]" >&2
+        echo "Usage: $0 [preflight|mine|mine-seed{0,1,2}|cache|cache-lane{0,1,2}|sweep|train|eval|eval-{paired-common,rare-frozen,rare-tuned}|summarize|all]" >&2
         exit 2
         ;;
 esac
@@ -39,7 +39,11 @@ CERTIFICATION_ROOT="${ROOT}/certification"
 MODEL_ROOT="${ROOT}/models"
 FORMAL_ROOT="${ROOT}/formal"
 LOG_DIR="${ROOT}/logs"
-STATUS_FILE="${ROOT}/status.txt"
+if [[ "${MODE}" == "all" ]]; then
+    STATUS_FILE="${ROOT}/status.txt"
+else
+    STATUS_FILE="${ROOT}/status_${MODE}.txt"
+fi
 
 PREPARE="${SCRIPT_DIR}/prepare_grpo_selector_v3_rare_original_data.py"
 SPLIT_TOOL="${SCRIPT_DIR}/split_grpo_selector_v3_rare_original.py"
@@ -224,28 +228,36 @@ run_cache_one() {
 }
 
 run_caches() {
+    for lane in 0 1 2; do
+        run_cache_lane "${lane}"
+    done
+    echo "PASS full and log-disjoint tuning cache bundles"
+}
+
+run_cache_lane() {
+    local lane="$1"
+    [[ "${lane}" =~ ^[012]$ ]] || {
+        echo "Invalid cache lane: ${lane}" >&2
+        return 2
+    }
     require_file "${RARE_DATA_ROOT}/rare_data_audit.json"
     require_file "${TUNING_SPLIT_ROOT}/split_audit.json"
     local full_count
     full_count="$(json_get "${RARE_DATA_ROOT}/rare_data_audit.json" union_count)"
-    for seed in 0 1 2; do
-        run_cache_one full train "${seed}" "${full_count}"             "${RARE_DATA_ROOT}/rare_common_union.yaml" "$((29800 + seed))"
-    done
+    run_cache_one full train "${lane}" "${full_count}" \
+        "${RARE_DATA_ROOT}/rare_common_union.yaml" "$((29800 + lane))"
 
     local train_count development_count certification_count
     train_count="$(json_get "${TUNING_SPLIT_ROOT}/split_audit.json" splits.train.union_tokens)"
     development_count="$(json_get "${TUNING_SPLIT_ROOT}/split_audit.json" splits.development.union_tokens)"
     certification_count="$(json_get "${TUNING_SPLIT_ROOT}/split_audit.json" splits.certification.union_tokens)"
-    for seed in 0 1 2; do
-        run_cache_one tuning train "${seed}" "${train_count}"             "${TUNING_SPLIT_ROOT}/train/rare_common_union.yaml" "$((29810 + seed))"
-    done
-    for seed in 3 4 5; do
-        run_cache_one tuning development "${seed}" "${development_count}"             "${TUNING_SPLIT_ROOT}/development/rare_common_union.yaml" "$((29810 + seed))"
-    done
-    for seed in 6 7 8; do
-        run_cache_one tuning certification "${seed}" "${certification_count}"             "${TUNING_SPLIT_ROOT}/certification/rare_common_union.yaml" "$((29810 + seed))"
-    done
-    echo "PASS full and log-disjoint tuning cache bundles"
+    run_cache_one tuning train "${lane}" "${train_count}" \
+        "${TUNING_SPLIT_ROOT}/train/rare_common_union.yaml" "$((29810 + lane))"
+    run_cache_one tuning development "$((lane + 3))" "${development_count}" \
+        "${TUNING_SPLIT_ROOT}/development/rare_common_union.yaml" "$((29813 + lane))"
+    run_cache_one tuning certification "$((lane + 6))" "${certification_count}" \
+        "${TUNING_SPLIT_ROOT}/certification/rare_common_union.yaml" "$((29816 + lane))"
+    echo "PASS cache lane ${lane}"
 }
 
 trial_ready() {
@@ -471,12 +483,25 @@ run_evaluation_seed() {
     evaluation_ready "${family}" "${seed}"
 }
 
+run_evaluation_family() {
+    local family="$1"
+    case "${family}" in
+        paired_common|rare_frozen|rare_tuned) ;;
+        *)
+            echo "Invalid evaluation family: ${family}" >&2
+            return 2
+            ;;
+    esac
+    for seed in 0 1 2; do
+        CURRENT_STAGE="formal_eval_${family}_seed${seed}"
+        run_evaluation_seed "${family}" "${seed}"
+    done
+    echo "PASS three formal four-block evaluations family=${family}"
+}
+
 run_evaluations() {
     for family in paired_common rare_frozen rare_tuned; do
-        for seed in 0 1 2; do
-            CURRENT_STAGE="formal_eval_${family}_seed${seed}"
-            run_evaluation_seed "${family}" "${seed}"
-        done
+        run_evaluation_family "${family}"
     done
     echo "PASS nine formal four-block evaluations"
 }
@@ -505,9 +530,17 @@ case "${MODE}" in
         run_preflight
         run_mining
         ;;
+    mine-seed0|mine-seed1|mine-seed2)
+        run_preflight
+        run_mining_seed "${MODE#mine-seed}"
+        ;;
     cache)
         run_preflight
         run_caches
+        ;;
+    cache-lane0|cache-lane1|cache-lane2)
+        run_preflight
+        run_cache_lane "${MODE#cache-lane}"
         ;;
     sweep)
         run_preflight
@@ -520,6 +553,18 @@ case "${MODE}" in
     eval)
         run_preflight
         run_evaluations
+        ;;
+    eval-paired-common)
+        run_preflight
+        run_evaluation_family paired_common
+        ;;
+    eval-rare-frozen)
+        run_preflight
+        run_evaluation_family rare_frozen
+        ;;
+    eval-rare-tuned)
+        run_preflight
+        run_evaluation_family rare_tuned
         ;;
     summarize)
         run_summary
