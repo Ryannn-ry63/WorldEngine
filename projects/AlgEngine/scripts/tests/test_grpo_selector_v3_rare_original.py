@@ -19,6 +19,7 @@ smoke_subset = importlib.import_module(
 )
 trainer = importlib.import_module("train_grpo_selector_v3_cached_rare_original")
 splitter = importlib.import_module("split_grpo_selector_v3_rare_original")
+materializer = importlib.import_module("materialize_grpo_selector_v3")
 
 
 def write_yaml(path, payload):
@@ -149,6 +150,35 @@ def test_smoke_subset_uses_one_deterministic_dense_log(
     assert audit["selected_log"] == "log_b"
     assert tokens.issubset({"b0", "b1", "b2"})
     assert len(tokens) == 2
+
+
+def test_materializer_accepts_rare_original_provenance_overrides(tmp_path):
+    args = materializer.build_parser().parse_args(
+        [
+            "--baseline",
+            str(tmp_path / "baseline.pth"),
+            "--scene-selector-state",
+            str(tmp_path / "selector.pt"),
+            "--expected-selector-sha256",
+            "abc123",
+            "--expected-method",
+            "scene_conditioned_exact_group_grpo_v3_rare_original_v1",
+            "--release-name",
+            "e2e_diffusiondrive_grpo_selector_v3_rare_original_v1_smoke",
+            "--output",
+            str(tmp_path / "checkpoint.pth"),
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+        ]
+    )
+    assert (
+        args.expected_method
+        == "scene_conditioned_exact_group_grpo_v3_rare_original_v1"
+    )
+    assert (
+        args.release_name
+        == "e2e_diffusiondrive_grpo_selector_v3_rare_original_v1_smoke"
+    )
 
 
 def test_rare_union_and_same_log_common_pairing(small_full_navtrain, tmp_path):
