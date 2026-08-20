@@ -67,9 +67,14 @@ def markdown(report):
     lines.extend(
         [
             "",
-            "主因果对照是 rare_frozen/rare_tuned 与 paired_common："
-            "它们使用相同 token 来源、相同 304,272 examples、4,800 optimizer "
-            "steps 和相同 eval seeds。common_v3_progress_fix 是与既有 V3 的连续性对照。",
+            "主因果对照是 rare_frozen 与 paired_common：rare_frozen 使用 "
+            "50/50 rare/common balanced sampling，paired_common 使用 "
+            "common-only sampling；二者使用同一配对 token 池、相同 304,272 "
+            "examples、4,800 optimizer steps 和相同 eval seeds。rare_tuned "
+            "沿用 50/50 rare/common sampling，但使用 rare development 选择的 "
+            "epoch 64，共 1,217,088 examples 和 19,200 optimizer steps，是 "
+            "secondary tuned result，不是 compute-matched 因果对照。"
+            "common_v3_progress_fix 是与既有 V3 的连续性对照。",
             "",
         ]
     )
