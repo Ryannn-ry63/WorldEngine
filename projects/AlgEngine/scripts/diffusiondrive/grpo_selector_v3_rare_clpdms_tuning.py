@@ -561,11 +561,94 @@ def resolve_checkpoint_record(
         "checkpoint_audit_sha256": sha256_file(audit_path),
     }
 
+def audit_lane(args) -> dict:
+    config = load_recipe_config(args.recipe_config)
+    recipes = recipe_map(config)
+    split = load_pass_json(args.split_audit)
+    if split["code_commit"] != args.code_commit:
+        raise RuntimeError("lane split/code commit drifted")
+    split_sha256 = sha256_file(args.split_audit)
+    seed = int(args.seed)
+    names = [
+        *[row["name"] for row in config["challengers"]],
+        *config["controls"],
+    ]
+    records = {}
+    for name in names:
+        metric_path = args.metrics_root / name / f"seed{seed}.json"
+        metric = load_metric_report(args.metrics_root, name, seed)
+        if metric["split_audit_sha256"] != split_sha256:
+            raise RuntimeError(f"{name} seed {seed} split audit drifted")
+        checkpoint = resolve_checkpoint_record(
+            args.repo_root,
+            args.model_root,
+            recipes[name],
+            name,
+            seed,
+        )
+        if metric.get("checkpoint_sha256") != checkpoint["checkpoint_sha256"]:
+            raise RuntimeError(f"{name} seed {seed} metric checkpoint drifted")
+        records[name] = {
+            "kind": recipes[name]["kind"],
+            "checkpoint": checkpoint,
+            "metrics_report": str(metric_path.resolve()),
+            "metrics_report_sha256": sha256_file(metric_path),
+            "score": metric["metrics"]["score"],
+            "success_rate": metric["metrics"]["success_rate"],
+        }
+    report = {
+        "schema_version": 1,
+        "status": "PASS",
+        "method": "diffusiondrive_v3_rare_clpdms_parallel_lane_v1",
+        "seed": seed,
+        "code_commit": str(args.code_commit),
+        "recipe_config_sha256": sha256_file(args.recipe_config),
+        "split_audit": str(args.split_audit.resolve()),
+        "split_audit_sha256": split_sha256,
+        "num_challengers": len(config["challengers"]),
+        "num_controls": len(config["controls"]),
+        "records": records,
+    }
+    write_json(args.output, report)
+    return report
+
+
+def load_lane_reports(
+    args, recipe_sha256: str, split_audit_sha256: str
+) -> list[dict]:
+    lanes = {}
+    for path in args.lane_report:
+        report = load_pass_json(path)
+        seed = int(report["seed"])
+        if seed in lanes:
+            raise RuntimeError(f"duplicate lane seed {seed}")
+        if report["code_commit"] != args.code_commit:
+            raise RuntimeError(f"lane seed {seed} code commit drifted")
+        if report["recipe_config_sha256"] != recipe_sha256:
+            raise RuntimeError(f"lane seed {seed} recipe config drifted")
+        if report["split_audit_sha256"] != split_audit_sha256:
+            raise RuntimeError(f"lane seed {seed} split audit drifted")
+        lanes[seed] = {
+            "path": str(path.resolve()),
+            "sha256": sha256_file(path),
+        }
+    if set(lanes) != {0, 1, 2}:
+        raise RuntimeError("selection requires passing lanes 0, 1, and 2")
+    return [lanes[seed] for seed in range(3)]
+
 
 def select_candidate(args) -> dict:
     config = load_recipe_config(args.recipe_config)
     recipes = recipe_map(config)
+    recipe_sha256 = sha256_file(args.recipe_config)
+    split = load_pass_json(args.split_audit)
+    if split["code_commit"] != args.code_commit:
+        raise RuntimeError("selection split/code commit drifted")
+    split_sha256 = sha256_file(args.split_audit)
+    lane_reports = load_lane_reports(args, recipe_sha256, split_sha256)
     screen = load_pass_json(args.screen)
+    if screen["recipe_config_sha256"] != recipe_sha256:
+        raise RuntimeError("screen recipe config drifted")
     shortlist = list(screen["shortlist"])
     compared = [config["incumbent"], *config["controls"]]
     names = list(dict.fromkeys([*compared, *shortlist]))
@@ -613,7 +696,10 @@ def select_candidate(args) -> dict:
         "checkpoints": checkpoints,
         "aggregates": aggregates,
         "challenger_diagnostics": challenger_diagnostics,
-        "recipe_config_sha256": sha256_file(args.recipe_config),
+        "lane_reports": lane_reports,
+        "recipe_config_sha256": recipe_sha256,
+        "split_audit": str(args.split_audit.resolve()),
+        "split_audit_sha256": split_sha256,
         "screen_sha256": sha256_file(args.screen),
         "code_commit": str(args.code_commit),
     }
@@ -819,12 +905,25 @@ def build_parser() -> argparse.ArgumentParser:
     screen.add_argument("--output", type=Path, required=True)
     screen.set_defaults(func=screen_candidates)
 
+    lane = subparsers.add_parser("lane")
+    lane.add_argument("--recipe-config", type=Path, required=True)
+    lane.add_argument("--metrics-root", type=Path, required=True)
+    lane.add_argument("--repo-root", type=Path, required=True)
+    lane.add_argument("--model-root", type=Path, required=True)
+    lane.add_argument("--split-audit", type=Path, required=True)
+    lane.add_argument("--seed", type=int, choices=(0, 1, 2), required=True)
+    lane.add_argument("--code-commit", required=True)
+    lane.add_argument("--output", type=Path, required=True)
+    lane.set_defaults(func=audit_lane)
+
     select = subparsers.add_parser("select")
     select.add_argument("--recipe-config", type=Path, required=True)
     select.add_argument("--screen", type=Path, required=True)
     select.add_argument("--metrics-root", type=Path, required=True)
     select.add_argument("--repo-root", type=Path, required=True)
     select.add_argument("--model-root", type=Path, required=True)
+    select.add_argument("--split-audit", type=Path, required=True)
+    select.add_argument("--lane-report", type=Path, action="append", required=True)
     select.add_argument("--minimum-improvement", type=float, default=0.005)
     select.add_argument("--minimum-nonnegative-seeds", type=int, default=2)
     select.add_argument("--code-commit", required=True)

@@ -43,8 +43,11 @@ full Reactive CSV 中单独提取未参与选参的 CL-confirm 指标。
 
 `rare_tuned` epoch64 和 `rare_frozen` epoch16 是只读控制。
 
-流程先用 optimizer/eval seed0 对六个 challenger 做 CL-dev screening，再对排名前二
-补齐 seeds1/2。最终按三 seed mean Reactive CL-PDMS 排名。challenger 只有同时满足：
+三个独立 lane 分别训练和评测 seed0/1/2 的全部六个 challenger，以消除 seed0 初筛后的
+任务依赖。三个 lane 可同时提交，且 checkpoint、闭环输出和审计文件互不冲突。选择阶段仍先
+用 seed0 对六个 challenger 做预注册 screening，再只对 seed0 Top-2 比较三 seed mean
+Reactive CL-PDMS；seeds1/2 的其余结果属于为了降低墙钟时间而预计算的数据，不参与晋级。
+challenger 只有同时满足：
 
 1. 相对 rare_tuned 平均提升至少 0.005；
 2. 至少 2/3 paired seeds 不下降；
@@ -64,14 +67,23 @@ cd /inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
 smoke 会验证 H100/MMCV/gsplat、真实场景 pickle 覆盖、1-split Ray、Reactive inference、
 CSV 合并和指标审计，不需要手动 activate conda。
 
-然后提交一个 8×H100 tune 任务：
+同时提交三个相互独立的 8×H100 调参 lane：
 
 ~~~bash
 cd /inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
-./run_diffusiondrive_grpo_selector_v3_rare_clpdms_tuning_8h100.sh tune
+./run_diffusiondrive_grpo_selector_v3_rare_clpdms_tuning_8h100.sh tune-lane 0
+./run_diffusiondrive_grpo_selector_v3_rare_clpdms_tuning_8h100.sh tune-lane 1
+./run_diffusiondrive_grpo_selector_v3_rare_clpdms_tuning_8h100.sh tune-lane 2
 ~~~
 
-生成 PASS selection 后，同时提交三个正式 lane：
+每个 lane 预计 3–5 小时。三个 lane 全部 PASS 后，在本地 CPU 或任意实例执行选择：
+
+~~~bash
+./run_diffusiondrive_grpo_selector_v3_rare_clpdms_tuning_8h100.sh select
+~~~
+
+`select` 不检查 GPU，不训练模型，也不会执行闭环仿真。生成 PASS selection 后，同时提交三个
+正式 lane：
 
 ~~~bash
 ./run_diffusiondrive_grpo_selector_v3_rare_clpdms_tuning_8h100.sh formal 0
@@ -79,7 +91,7 @@ cd /inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
 ./run_diffusiondrive_grpo_selector_v3_rare_clpdms_tuning_8h100.sh formal 2
 ~~~
 
-三个 lane 完成后，本地 CPU 或任意已有实例运行：
+三个正式 lane 完成后，本地运行：
 
 ~~~bash
 ./run_diffusiondrive_grpo_selector_v3_rare_clpdms_tuning_8h100.sh summarize
@@ -96,7 +108,7 @@ experiments/diffusiondrive/grpo_selector_v3_rare_clpdms_tuning_v1/
 ├── closed_loop_split/split_audit.json
 ├── models/<candidate>/seed{0,1,2}/
 ├── development_metrics/<candidate>/seed{0,1,2}.json
-├── selection/{seed0_screen.json,selection.json}
+├── selection/{lane_seed0.json,lane_seed1.json,lane_seed2.json,seed0_screen.json,selection.json}
 └── formal/{formal_eval/,clpdms_tuning_summary.json,clpdms_tuning_summary.md}
 ~~~
 

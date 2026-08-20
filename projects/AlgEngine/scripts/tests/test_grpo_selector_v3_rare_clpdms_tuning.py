@@ -184,6 +184,72 @@ def test_three_seed_promotion_gate_keeps_incumbent_for_small_gain():
     assert by_name["robust"]["promotion_gate_passed"] is True
 
 
+def test_lane_reports_require_all_three_current_seeds(tmp_path):
+    recipe = tmp_path / "recipes.json"
+    recipe.write_text("{}")
+    recipe_sha = tuning.sha256_file(recipe)
+    paths = []
+    for seed in range(3):
+        path = tmp_path / f"lane_seed{seed}.json"
+        tuning.write_json(
+            path,
+            {
+                "status": "PASS",
+                "seed": seed,
+                "code_commit": "current-commit",
+                "recipe_config_sha256": recipe_sha,
+                "split_audit_sha256": "split-sha",
+            },
+        )
+        paths.append(path)
+
+    args = argparse.Namespace(
+        lane_report=paths,
+        code_commit="current-commit",
+    )
+    rows = tuning.load_lane_reports(args, recipe_sha, "split-sha")
+    assert [Path(row["path"]).name for row in rows] == [
+        "lane_seed0.json",
+        "lane_seed1.json",
+        "lane_seed2.json",
+    ]
+
+    args.lane_report = paths[:2]
+    with pytest.raises(RuntimeError, match="requires passing lanes"):
+        tuning.load_lane_reports(args, recipe_sha, "split-sha")
+
+    args.lane_report = paths
+    args.code_commit = "different-commit"
+    with pytest.raises(RuntimeError, match="code commit drifted"):
+        tuning.load_lane_reports(args, recipe_sha, "split-sha")
+
+
+def test_lane_cli_parser_requires_explicit_seed(tmp_path):
+    args = tuning.build_parser().parse_args(
+        [
+            "lane",
+            "--recipe-config",
+            str(tmp_path / "recipes.json"),
+            "--metrics-root",
+            str(tmp_path / "metrics"),
+            "--repo-root",
+            str(tmp_path / "repo"),
+            "--model-root",
+            str(tmp_path / "models"),
+            "--split-audit",
+            str(tmp_path / "split.json"),
+            "--seed",
+            "2",
+            "--code-commit",
+            "commit",
+            "--output",
+            str(tmp_path / "lane.json"),
+        ]
+    )
+    assert args.seed == 2
+    assert args.func is tuning.audit_lane
+
+
 def test_merge_results_accepts_one_split(tmp_path, monkeypatch):
     test_path = tmp_path / "closed_loop"
     split = test_path / "split_0"

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-MODE="${1:-tune}"
+MODE="${1:-}"
 SEED="${2:-}"
 case "${MODE}" in
-    preflight|prepare|tune|smoke|summarize) ;;
-    formal)
+    preflight|prepare|select|smoke|summarize) ;;
+    tune-lane|formal)
         if ! [[ "${SEED}" =~ ^[012]$ ]]; then
-            echo "Usage: $0 formal {0|1|2}" >&2
+            echo "Usage: $0 ${MODE} {0|1|2}" >&2
             exit 2
         fi
         ;;
     *)
-        echo "Usage: $0 [preflight|prepare|tune|smoke|formal {0|1|2}|summarize]" >&2
+        echo "Usage: $0 [preflight|prepare|smoke|tune-lane {0|1|2}|select|formal {0|1|2}|summarize]" >&2
         exit 2
         ;;
 esac
@@ -27,7 +27,7 @@ export ALGENGINE_PYTHON="${ALGENGINE_ENV}/bin/python"
 export ALGENGINE_TORCHRUN="${ALGENGINE_ENV}/bin/torchrun"
 export SIMENGINE_PYTHON="${SIMENGINE_PYTHON:-/root/miniconda3/envs/simengine/bin/python}"
 
-if [[ "${MODE}" != "prepare" && "${MODE}" != "summarize" ]]; then
+if [[ "${MODE}" != "prepare" && "${MODE}" != "select" && "${MODE}" != "summarize" ]]; then
     . "${SCRIPT_DIR}/grpo_selector_h100_env.sh"
 fi
 
@@ -57,6 +57,7 @@ CACHE_ROOT="${OLD_ROOT}/cache/full"
 SPLIT_AUDIT="${SPLIT_ROOT}/split_audit.json"
 SCREEN_REPORT="${ROOT}/selection/seed0_screen.json"
 SELECTION_REPORT="${ROOT}/selection/selection.json"
+LANE_REPORT="${ROOT}/selection/lane_seed${SEED:-unset}.json"
 FINAL_REPORT="${FORMAL_ROOT}/clpdms_tuning_summary.json"
 CHALLENGERS=(early32 early48 lowlr48 lowlr64 anchored64 lowlr_anchored64)
 CONTROLS=(rare_tuned rare_frozen)
@@ -266,14 +267,15 @@ run_candidate_metrics() {
     "${ALGENGINE_PYTHON}" "${AUDITOR}" metrics         --split-audit "${SPLIT_AUDIT}"         --split development         --csv "${csv}"         --model "${name}"         --seed "${seed}"         --checkpoint-manifest "${manifest}"         --output "${output}"
 }
 
-train_seed0_grid() {
-    CURRENT_STAGE=train_seed0_grid
+train_candidate_grid() {
+    local seed="$1"
+    CURRENT_STAGE="train_seed${seed}_grid"
     local pids=()
     local gpu=0
     for name in "${CHALLENGERS[@]}"; do
         (
-            train_candidate "${name}" 0 "${gpu}"
-        ) > "${LOG_DIR}/train_${name}_seed0.log" 2>&1 &
+            train_candidate "${name}" "${seed}" "${gpu}"
+        ) > "${LOG_DIR}/train_${name}_seed${seed}.log" 2>&1 &
         pids+=("$!")
         gpu=$((gpu + 1))
     done
@@ -282,73 +284,81 @@ train_seed0_grid() {
         if ! wait "${pid}"; then failed=1; fi
     done
     [[ "${failed}" -eq 0 ]] || {
-        echo "Seed0 grid training failed; inspect ${LOG_DIR}/train_*_seed0.log" >&2
+        echo "Seed ${seed} grid training failed; inspect ${LOG_DIR}/train_*_seed${seed}.log" >&2
         return 1
     }
 }
 
 screen_seed0() {
-    for name in "${CHALLENGERS[@]}"; do
-        run_candidate_metrics "${name}" 0
-    done
-    for name in "${CONTROLS[@]}"; do
-        run_control_metrics "${name}" 0
-    done
     CURRENT_STAGE=seed0_screen
     "${ALGENGINE_PYTHON}" "${AUDITOR}" screen         --recipe-config "${RECIPE_CONFIG}"         --metrics-root "${METRICS_ROOT}"         --shortlist-size 2         --output "${SCREEN_REPORT}"
 }
 
-shortlist_names() {
-    "${ALGENGINE_PYTHON}" -c '
-import json,sys
-for name in json.load(open(sys.argv[1]))["shortlist"]:
-    print(name)
-' "${SCREEN_REPORT}"
+
+audit_tune_lane() {
+    local seed="$1"
+    local report="${ROOT}/selection/lane_seed${seed}.json"
+    local code_sha
+    code_sha="$(git -C "${WORLDENGINE_ROOT}" rev-parse HEAD)"
+    CURRENT_STAGE="lane_seed${seed}_audit"
+    "${ALGENGINE_PYTHON}" "${AUDITOR}" lane \
+        --recipe-config "${RECIPE_CONFIG}" \
+        --metrics-root "${METRICS_ROOT}" \
+        --repo-root "${WORLDENGINE_ROOT}" \
+        --model-root "${MODEL_ROOT}" \
+        --split-audit "${SPLIT_AUDIT}" \
+        --seed "${seed}" \
+        --code-commit "${code_sha}" \
+        --output "${report}"
+    json_pass "${report}"
 }
 
-train_shortlist_replicas() {
-    mapfile -t shortlist < <(shortlist_names)
-    [[ "${#shortlist[@]}" -eq 2 ]] || { echo "Expected two shortlisted candidates" >&2; return 1; }
-    CURRENT_STAGE=train_shortlist_replicas
-    local pids=()
-    local gpu=0
-    local name seed
-    for name in "${shortlist[@]}"; do
-        for seed in 1 2; do
-            (
-                train_candidate "${name}" "${seed}" "${gpu}"
-            ) > "${LOG_DIR}/train_${name}_seed${seed}.log" 2>&1 &
-            pids+=("$!")
-            gpu=$((gpu + 1))
-        done
+evaluate_tune_lane() {
+    local seed="$1"
+    local name
+    for name in "${CHALLENGERS[@]}"; do
+        run_candidate_metrics "${name}" "${seed}"
     done
-    local failed=0
-    for pid in "${pids[@]}"; do
-        if ! wait "${pid}"; then failed=1; fi
+    for name in "${CONTROLS[@]}"; do
+        run_control_metrics "${name}" "${seed}"
     done
-    [[ "${failed}" -eq 0 ]] || {
-        echo "Shortlist training failed; inspect ${LOG_DIR}/train_*_seed{1,2}.log" >&2
-        return 1
-    }
+    audit_tune_lane "${seed}"
+}
+
+require_tune_lanes() {
+    local current report seed
+    current="$(git -C "${WORLDENGINE_ROOT}" rev-parse HEAD)"
+    for seed in 0 1 2; do
+        report="${ROOT}/selection/lane_seed${seed}.json"
+        require_file "${report}"
+        json_pass "${report}"
+        "${ALGENGINE_PYTHON}" -c '
+import json,sys
+row=json.load(open(sys.argv[1]))
+assert int(row["seed"])==int(sys.argv[2])
+assert row["code_commit"]==sys.argv[3]
+' "${report}" "${seed}" "${current}"
+    done
 }
 
 select_three_seed_winner() {
-    mapfile -t shortlist < <(shortlist_names)
-    local name seed
-    for name in "${shortlist[@]}"; do
-        for seed in 1 2; do
-            run_candidate_metrics "${name}" "${seed}"
-        done
-    done
-    for name in "${CONTROLS[@]}"; do
-        for seed in 1 2; do
-            run_control_metrics "${name}" "${seed}"
-        done
-    done
     CURRENT_STAGE=three_seed_selection
     local code_sha
     code_sha="$(git -C "${WORLDENGINE_ROOT}" rev-parse HEAD)"
-    "${ALGENGINE_PYTHON}" "${AUDITOR}" select         --recipe-config "${RECIPE_CONFIG}"         --screen "${SCREEN_REPORT}"         --metrics-root "${METRICS_ROOT}"         --repo-root "${WORLDENGINE_ROOT}"         --model-root "${MODEL_ROOT}"         --minimum-improvement 0.005         --minimum-nonnegative-seeds 2         --code-commit "${code_sha}"         --output "${SELECTION_REPORT}"
+    "${ALGENGINE_PYTHON}" "${AUDITOR}" select \
+        --recipe-config "${RECIPE_CONFIG}" \
+        --screen "${SCREEN_REPORT}" \
+        --metrics-root "${METRICS_ROOT}" \
+        --repo-root "${WORLDENGINE_ROOT}" \
+        --model-root "${MODEL_ROOT}" \
+        --split-audit "${SPLIT_AUDIT}" \
+        --lane-report "${ROOT}/selection/lane_seed0.json" \
+        --lane-report "${ROOT}/selection/lane_seed1.json" \
+        --lane-report "${ROOT}/selection/lane_seed2.json" \
+        --minimum-improvement 0.005 \
+        --minimum-nonnegative-seeds 2 \
+        --code-commit "${code_sha}" \
+        --output "${SELECTION_REPORT}"
     json_pass "${SELECTION_REPORT}"
     "${ALGENGINE_PYTHON}" -c '
 import json,sys
@@ -357,13 +367,21 @@ print("SELECTED",row["selected"])
 ' "${SELECTION_REPORT}"
 }
 
-run_tune() {
+run_tune_lane() {
     run_static_preflight
     run_cuda_preflight
     ensure_split
-    train_seed0_grid
+    train_candidate_grid "${SEED}"
+    evaluate_tune_lane "${SEED}"
+    echo "PASS rare CL-PDMS tune lane seed ${SEED}"
+    echo "lane report: ${LANE_REPORT}"
+}
+
+run_select() {
+    run_static_preflight
+    ensure_split
+    require_tune_lanes
     screen_seed0
-    train_shortlist_replicas
     select_three_seed_winner
     echo "PASS rare CL-PDMS tuning selection"
     echo "selection: ${SELECTION_REPORT}"
@@ -494,8 +512,11 @@ case "${MODE}" in
     prepare)
         ensure_split
         ;;
-    tune)
-        run_tune
+    tune-lane)
+        run_tune_lane
+        ;;
+    select)
+        run_select
         ;;
     formal)
         run_formal_seed
