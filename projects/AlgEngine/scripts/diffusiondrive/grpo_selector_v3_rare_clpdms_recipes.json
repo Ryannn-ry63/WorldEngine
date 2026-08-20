@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "objective": "maximize_three_seed_mean_closedloop_reactive_score",
+  "incumbent": "rare_tuned",
+  "controls": {
+    "rare_tuned": {
+      "temperature": 1.0,
+      "learning_rate": 0.0001,
+      "kl_weight": 0.001,
+      "epoch": 64,
+      "model_root": "experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/models/rare_tuned",
+      "formal_summary_template": "experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_tuned_s{seed}/summary.json"
+    },
+    "rare_frozen": {
+      "temperature": 1.0,
+      "learning_rate": 0.0001,
+      "kl_weight": 0.001,
+      "epoch": 16,
+      "model_root": "experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/models/rare_frozen",
+      "formal_summary_template": "experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_frozen_s{seed}/summary.json"
+    }
+  },
+  "challengers": [
+    {
+      "name": "early32",
+      "temperature": 1.0,
+      "learning_rate": 0.0001,
+      "kl_weight": 0.001,
+      "epoch": 32
+    },
+    {
+      "name": "early48",
+      "temperature": 1.0,
+      "learning_rate": 0.0001,
+      "kl_weight": 0.001,
+      "epoch": 48
+    },
+    {
+      "name": "lowlr48",
+      "temperature": 1.0,
+      "learning_rate": 0.00005,
+      "kl_weight": 0.001,
+      "epoch": 48
+    },
+    {
+      "name": "lowlr64",
+      "temperature": 1.0,
+      "learning_rate": 0.00005,
+      "kl_weight": 0.001,
+      "epoch": 64
+    },
+    {
+      "name": "anchored64",
+      "temperature": 1.0,
+      "learning_rate": 0.0001,
+      "kl_weight": 0.003,
+      "epoch": 64
+    },
+    {
+      "name": "lowlr_anchored64",
+      "temperature": 1.0,
+      "learning_rate": 0.00005,
+      "kl_weight": 0.003,
+      "epoch": 64
+    }
+  ]
+}
