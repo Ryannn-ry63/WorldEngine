@@ -231,3 +231,41 @@ wins/ties/losses、rare vote strata 和输入 SHA。
 
 主要问题是 rare-focused 分布是否相对 paired common 改善 rare 指标，以及是否存在
 common/closed-loop trade-off。正负结果都应保留；只有合同或 provenance 失败才重跑。
+
+## 11. 2026-08-20 正式结果封存
+
+正式五行结果为 3 个 paired evaluation seeds 的均值，数值按百分制展示：
+
+| Model | OP-PDMS（navtest） | OP-PDMS（rare） | CL - Valid Rate | CL - PDMS |
+|---|---:|---:|---:|---:|
+| epoch100 | 85.71 | 58.80 | 76.82 | 63.13 |
+| common_v3_progress_fix | 87.07 | 60.43 | 80.05 | 68.31 |
+| paired_common | 86.15 | 57.88 | 76.24 | 65.48 |
+| rare_frozen | 86.13 | 69.63 | 92.27 | 73.31 |
+| rare_tuned | 87.27 | 68.14 | 89.97 | 75.73 |
+
+主因果结论使用等算力的 `rare_frozen - paired_common`。`rare_tuned` 使用相同
+rare/common 1:1 数据，但从 16 epochs 增加到 64 epochs，是 secondary tuned result，
+不能替换等算力主对照。
+
+`rare_tuned` 三个 seed 的 Reactive CL-PDMS 分别为：
+
+- seed0：0.7677418685121105；
+- seed1：0.7452733910034604；
+- seed2：0.7590137370242214；
+- 三 seed mean：0.7573429988465974。
+
+当前最佳单 seed 是 seed0（76.77）。checkpoint SHA256 为
+`bd35f0293c878c6cddb985ac0b8aaae91d4f7f8e0bf2c3bf70ba49ba329c02a3`。
+正式 provenance：
+
+- code commit：`3939f02154ed9f801bdcc1bba0190c3520bcbb11`；
+- `formal/rare_original_comparison.json` SHA256：
+  `f467d0fcd66d55ca525c9c07bdb131112175b1bb661f47b56dcc53dd9bec0056`；
+- `sweep/selection.json` SHA256：
+  `64f69b34727551db4f0188643d8a32230a7262006a2f0369843fc0d97acd70b3`；
+- `certification/report.json` SHA256：
+  `cdd0a0acd77597b8208c0a64fb3128b465189f69e032e7d88eff10ed5b4919eb`。
+
+上述大型实验产物保留在 experiments 下，不提交 Git；本节保存足以定位和校验它们的
+路径、SHA 和结果。后续 CL-PDMS 定向调参必须从本版本另开分支，不能覆盖本实验。
