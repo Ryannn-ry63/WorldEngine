@@ -91,6 +91,12 @@ def load_cache(path, expected_split=None):
     reward_sha = sha256_file(REWARD_IMPLEMENTATION)
     if manifest.get("reward_implementation_sha256") != reward_sha:
         raise RuntimeError(f"cache was scored by stale reward code: {manifest_path}")
+    if (
+        not manifest.get("immutable_source_sha256")
+        or manifest.get("immutable_source_sha256")
+        != manifest.get("immutable_output_sha256")
+    ):
+        raise RuntimeError(f"cache immutable-data audit did not pass: {manifest_path}")
     if manifest.get("cache_sha256") != sha256_file(path):
         raise RuntimeError(f"cache SHA256 mismatch: {path}")
     if expected_split is not None and manifest.get("split") != expected_split:

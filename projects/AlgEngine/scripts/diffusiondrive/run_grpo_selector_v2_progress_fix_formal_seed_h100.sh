@@ -19,8 +19,6 @@ SELECTION="${V2_ROOT}/selection/selection.json"
 REFERENCE_ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_formal"
 REFERENCE_SUMMARY="${REFERENCE_ROOT}/formal_eval/e2e_diffusiondrive_reference_paired_s${SEED}/summary.json"
 FORMAL_ROOT="${V2_ROOT}/formal"
-FORMAL_MODEL="e2e_diffusiondrive_grpo_selector_v2_progress_fix_v1_s${SEED}"
-CURRENT_SUMMARY="${FORMAL_ROOT}/formal_eval/${FORMAL_MODEL}/summary.json"
 LOG_ROOT="${FORMAL_ROOT}/logs"
 mkdir -p "${LOG_ROOT}"
 LOG_FILE="${LOG_ROOT}/seed${SEED}_$(date -u +%Y%m%dT%H%M%SZ).log"
@@ -40,6 +38,8 @@ done
     exit 1
 }
 
+REWARD_FILE="${ALGENGINE_ROOT}/mmdet3d_plugin/navformer/dense_heads/diffusiondrive_online_pdm_reward.py"
+REWARD_SHA="$(sha256sum "${REWARD_FILE}" | awk '{print $1}')"
 mapfile -t SELECTED_VALUES < <("${ALGENGINE_PYTHON}" -c '
 import json, sys
 selection=json.load(open(sys.argv[1])); reference=json.load(open(sys.argv[2])); seed=int(sys.argv[3])
@@ -49,17 +49,17 @@ if selection.get("baseline_sha256") != sys.argv[4]: raise SystemExit("baseline d
 if reference.get("status") != "PASS" or int(reference.get("eval_seed", -1)) != seed: raise SystemExit("paired reference drifted")
 if reference.get("checkpoint_sha256") != sys.argv[4]: raise SystemExit("reference checkpoint drifted")
 s=selection["selected"]
+training=json.load(open(s["report"]))
+if training.get("reward_implementation_sha256") != sys.argv[6]: raise SystemExit("selected reward implementation drifted")
 for key in ("temperature", "learning_rate", "kl_weight", "epoch"):
     print(s[key])
 print(selection["selection_mode"])
-' "${SELECTION}" "${REFERENCE_SUMMARY}" "${SEED}" "${BASELINE_SHA256}" "${REWARD_CONTRACT}")
+' "${SELECTION}" "${REFERENCE_SUMMARY}" "${SEED}" "${BASELINE_SHA256}" "${REWARD_CONTRACT}" "${REWARD_SHA}")
 TEMPERATURE="${SELECTED_VALUES[0]}"
 LEARNING_RATE="${SELECTED_VALUES[1]}"
 KL_WEIGHT="${SELECTED_VALUES[2]}"
 EPOCH="${SELECTED_VALUES[3]}"
 SELECTION_MODE="${SELECTED_VALUES[4]}"
-REWARD_FILE="${ALGENGINE_ROOT}/mmdet3d_plugin/navformer/dense_heads/diffusiondrive_online_pdm_reward.py"
-REWARD_SHA="$(sha256sum "${REWARD_FILE}" | awk '{print $1}')"
 
 if [[ "${SEED}" == "0" ]]; then
     CHECKPOINT="${V2_ROOT}/selection/selected_checkpoint.pth"
@@ -134,6 +134,11 @@ raise SystemExit(0 if ok else 1)
     fi
     EXPECTED_SHA256="$("${ALGENGINE_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint_sha256"])' "${MANIFEST}")"
 fi
+
+# Bind closed-loop resume directories to the exact checkpoint.  A changed
+# checkpoint can never silently reuse simulations from an earlier run.
+FORMAL_MODEL="e2e_diffusiondrive_grpo_selector_v2_progress_fix_v1_s${SEED}_${EXPECTED_SHA256:0:12}"
+CURRENT_SUMMARY="${FORMAL_ROOT}/formal_eval/${FORMAL_MODEL}/summary.json"
 
 CURRENT_STAGE=checkpoint_audit
 [[ -f "${CHECKPOINT}" ]] || { echo "Missing formal checkpoint: ${CHECKPOINT}" >&2; exit 1; }

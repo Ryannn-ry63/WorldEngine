@@ -270,9 +270,13 @@ def main():
             old_root
             / f"formal/formal_eval/e2e_diffusiondrive_grpo_selector_v2_s{seed}/summary.json"
         )
+        checkpoint_sha = checkpoints[str(seed)]["checkpoint_sha256"]
+        fixed_model = (
+            "e2e_diffusiondrive_grpo_selector_v2_progress_fix_v1_"
+            f"s{seed}_{checkpoint_sha[:12]}"
+        )
         fixed_path, fixed = load_pass(
-            fixed_root
-            / f"formal/formal_eval/e2e_diffusiondrive_grpo_selector_v2_progress_fix_v1_s{seed}/summary.json"
+            fixed_root / f"formal/formal_eval/{fixed_model}/summary.json"
         )
         for label, report in (("reference", reference), ("old", old), ("fixed", fixed)):
             if int(report.get("eval_seed", -1)) != seed:

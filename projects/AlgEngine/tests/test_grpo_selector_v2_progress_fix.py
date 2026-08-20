@@ -152,6 +152,9 @@ def test_merge_writes_audited_schema2_cache(tmp_path):
     assert manifest["immutable_source_sha256"] == manifest[
         "immutable_output_sha256"
     ]
+    loaded, loaded_manifest = TRAIN.load_cache(output_dir / "cache.pt", "train")
+    assert len(loaded["tokens"]) == 4
+    assert loaded_manifest["method"] == RESCORE.OUTPUT_METHOD
 
 
 def test_cached_trainer_rejects_old_schema_before_training(tmp_path):
@@ -164,6 +167,8 @@ def test_cached_trainer_rejects_old_schema_before_training(tmp_path):
         "method": RESCORE.SOURCE_METHOD,
         "cache_sha256": TRAIN.sha256_file(cache_path),
         "split": "train",
+        "immutable_source_sha256": "same",
+        "immutable_output_sha256": "same",
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest) + "\n")
     with pytest.raises(RuntimeError, match="not corrected schema v2"):
@@ -227,9 +232,10 @@ def test_formal_runner_uses_fresh_model_name_and_all_four_blocks():
     runner = (
         SCRIPT_DIR / "run_grpo_selector_v2_progress_fix_formal_seed_h100.sh"
     ).read_text()
-    assert "e2e_diffusiondrive_grpo_selector_v2_progress_fix_v1_s${SEED}" in runner
+    assert "e2e_diffusiondrive_grpo_selector_v2_progress_fix_v1_s${SEED}_${EXPECTED_SHA256:0:12}" in runner
     assert "run_grpo_selector_formal_table_h100.sh" in runner
     assert "selection_mode" in runner
+    assert "selected reward implementation drifted" in runner
 
 
 def test_closedloop_runner_propagates_split_count_to_merger():
