@@ -78,7 +78,39 @@ cd /inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
 `selection_mode=predeclared_old_hparams_fallback` 写入 manifest，并使用实验开始前
 声明的旧 V2 超参 `T=1, lr=1e-3, KL=1e-3, epoch=32`。
 
-### 2. selection 生成后，并行提交 seed1 / seed2
+### 2. 可以一次提交三个任务后睡觉
+
+推荐同时提交下面三个 8×H100 任务：
+
+```bash
+./run_diffusiondrive_grpo_selector_v2_progress_fix_8h100.sh prepare-seed0
+```
+
+```bash
+./run_diffusiondrive_grpo_selector_v2_progress_fix_8h100.sh formal-wait 1
+```
+
+```bash
+./run_diffusiondrive_grpo_selector_v2_progress_fix_8h100.sh formal-wait 2
+```
+
+两个 waiter 会检查 `corrected_sweep` receipt、git commit、reward SHA 和 selection
+manifest；selection 尚未生成时每 60 秒轮询，前序任务明确失败时立即退出。selection
+通过后 seed1/seed2 会自动开始，并与 seed0 的正式评测并行，不需要等 seed0 评测
+结束。默认等待上限 12 小时，可通过
+`V2_PROGRESS_FIX_WAIT_TIMEOUT_SECONDS` 修改。
+
+注意：waiter 等待期间不会伪造 GPU 计算量。如果平台会主动杀死低 GPU 利用率的
+已调度任务，最稳妥的选择是只提交一个无空转的串行 overnight 任务：
+
+```bash
+./run_diffusiondrive_grpo_selector_v2_progress_fix_8h100.sh overnight
+```
+
+它会在同一个任务里依次完成 prepare/seed0、seed1、seed2 和最终汇总，耗时更长，
+但不依赖跨任务等待。
+
+如果 selection 已经生成，也仍可直接并行提交：
 
 ```bash
 ./run_diffusiondrive_grpo_selector_v2_progress_fix_8h100.sh formal 1
@@ -88,8 +120,7 @@ cd /inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
 ./run_diffusiondrive_grpo_selector_v2_progress_fix_8h100.sh formal 2
 ```
 
-两个任务可同时排队、同时运行。它们启动时要求 selection 已存在；不会占卡等待
-上游文件，因此不会因低 GPU 利用率被平台 kill。
+`formal 1/2` 是立即运行模式；selection 不存在时会快速报错。
 
 每个 seed 都评测：
 

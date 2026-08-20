@@ -224,8 +224,12 @@ def test_integrated_runner_combines_prepare_and_exposes_parallel_formal_lanes():
     ).read_text()
     assert "prepare-seed0" in runner
     assert 'run_grpo_selector_v2_progress_fix_formal_seed_h100.sh\" 0' in runner
-    assert 'formal_seed${FORMAL_SEED}' in runner
-    assert "wait" not in runner.split('case "${MODE}" in', 1)[-1]
+    assert 'run_formal_seed "${FORMAL_SEED}"' in runner
+    assert "formal-wait" in runner
+    assert "wait_for_corrected_selection" in runner
+    assert "V2_PROGRESS_FIX_WAIT_TIMEOUT_SECONDS" in runner
+    assert 'receipt.get("code_sha") != sys.argv[3]' in runner
+    assert "overnight" in runner
 
 
 def test_formal_runner_uses_fresh_model_name_and_all_four_blocks():
