@@ -26,6 +26,18 @@ def parse_args():
     parser.add_argument("--selector-state", type=Path, required=True)
     parser.add_argument("--expected-selector-sha256", required=True)
     parser.add_argument("--train-seed", type=int, required=True)
+    parser.add_argument("--temperature", type=float, default=FORMAL_TEMPERATURE)
+    parser.add_argument(
+        "--learning-rate", type=float, default=FORMAL_LEARNING_RATE
+    )
+    parser.add_argument("--kl-weight", type=float, default=FORMAL_KL_WEIGHT)
+    parser.add_argument("--epoch", type=int, default=FORMAL_EPOCH)
+    parser.add_argument("--expected-reward-contract")
+    parser.add_argument("--expected-reward-sha256")
+    parser.add_argument(
+        "--experiment-method",
+        default="e2e_diffusiondrive_grpo_selector_v2_replica",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     return parser.parse_args()
@@ -39,7 +51,17 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def validate_selector_payload(path, expected_sha, train_seed):
+def validate_selector_payload(
+    path,
+    expected_sha,
+    train_seed,
+    temperature=FORMAL_TEMPERATURE,
+    learning_rate=FORMAL_LEARNING_RATE,
+    kl_weight=FORMAL_KL_WEIGHT,
+    epoch=FORMAL_EPOCH,
+    expected_reward_contract=None,
+    expected_reward_sha256=None,
+):
     actual_sha = sha256_file(path)
     if actual_sha != expected_sha:
         raise RuntimeError("selector-state SHA256 mismatch")
@@ -47,11 +69,11 @@ def validate_selector_payload(path, expected_sha, train_seed):
     expected = {
         "schema_version": 2,
         "method": "exact_group_grpo",
-        "temperature": FORMAL_TEMPERATURE,
-        "learning_rate": FORMAL_LEARNING_RATE,
-        "kl_weight": FORMAL_KL_WEIGHT,
+        "temperature": temperature,
+        "learning_rate": learning_rate,
+        "kl_weight": kl_weight,
         "train_seed": train_seed,
-        "epoch": FORMAL_EPOCH,
+        "epoch": epoch,
     }
     for key, value in expected.items():
         if payload.get(key) != value:
@@ -62,6 +84,17 @@ def validate_selector_payload(path, expected_sha, train_seed):
     selector = payload.get("selector_state")
     if not isinstance(selector, dict) or len(selector) != 10:
         raise RuntimeError("selector-state must contain exactly 10 tensors")
+    if (
+        expected_reward_contract is not None
+        and payload.get("reward_contract") != expected_reward_contract
+    ):
+        raise RuntimeError("selector-state reward contract drifted")
+    if (
+        expected_reward_sha256 is not None
+        and payload.get("reward_implementation_sha256")
+        != expected_reward_sha256
+    ):
+        raise RuntimeError("selector-state reward implementation drifted")
     return actual_sha
 
 
@@ -71,8 +104,8 @@ def main():
     selector_state = args.selector_state.expanduser().resolve()
     output = args.output.expanduser().resolve()
     manifest = args.manifest.expanduser().resolve()
-    if args.train_seed not in (1, 2):
-        raise ValueError("formal replica train seed must be 1 or 2")
+    if args.train_seed not in (0, 1, 2):
+        raise ValueError("train seed must be 0, 1, or 2")
     for path in (baseline, selector_state):
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -80,18 +113,28 @@ def main():
     if baseline_sha != BASELINE_SHA256:
         raise RuntimeError("baseline SHA256 mismatch")
     selector_sha = validate_selector_payload(
-        selector_state, args.expected_selector_sha256, args.train_seed
+        selector_state,
+        args.expected_selector_sha256,
+        args.train_seed,
+        temperature=args.temperature,
+        learning_rate=args.learning_rate,
+        kl_weight=args.kl_weight,
+        epoch=args.epoch,
+        expected_reward_contract=args.expected_reward_contract,
+        expected_reward_sha256=args.expected_reward_sha256,
     )
 
     selection = {
         "schema_version": 1,
-        "method": "e2e_diffusiondrive_grpo_selector_v2_replica",
+        "method": args.experiment_method,
         "objective": "exact_complete_action_expected_advantage",
-        "temperature": FORMAL_TEMPERATURE,
-        "learning_rate": FORMAL_LEARNING_RATE,
-        "kl_weight": FORMAL_KL_WEIGHT,
+        "reward_contract": args.expected_reward_contract,
+        "reward_implementation_sha256": args.expected_reward_sha256,
+        "temperature": args.temperature,
+        "learning_rate": args.learning_rate,
+        "kl_weight": args.kl_weight,
         "train_seed": args.train_seed,
-        "epoch": FORMAL_EPOCH,
+        "epoch": args.epoch,
         "selector_state": str(selector_state),
         "selector_state_sha256": selector_sha,
     }

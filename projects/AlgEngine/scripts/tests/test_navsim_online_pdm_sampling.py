@@ -14,6 +14,44 @@ DETECTOR_FILE = (
     Path(__file__).resolve().parents[2]
     / "mmdet3d_plugin/navformer/detectors/navformer.py"
 )
+REWARD_FILE = (
+    Path(__file__).resolve().parents[2]
+    / "mmdet3d_plugin/navformer/dense_heads/diffusiondrive_online_pdm_reward.py"
+)
+
+
+class _MultiMetricIndex:
+    NO_COLLISION = 0
+    DRIVABLE_AREA = 1
+
+
+class _WeightedMetricIndex:
+    PROGRESS = 0
+    TTC = 1
+    COMFORTABLE = 2
+    DRIVING_DIRECTION = 3
+
+
+def _load_pairwise_official_scores():
+    tree = ast.parse(REWARD_FILE.read_text())
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "pairwise_official_scores"
+    )
+    namespace = {
+        "np": np,
+        "PDMScorer": object,
+        "Tuple": tuple,
+        "MultiMetricIndex": _MultiMetricIndex,
+        "WeightedMetricIndex": _WeightedMetricIndex,
+    }
+    exec(
+        compile(ast.Module(body=[function], type_ignores=[]), REWARD_FILE, "exec"),
+        namespace,
+    )
+    return namespace["pairwise_official_scores"]
 
 
 def _load_online_scoring_method():
@@ -201,3 +239,85 @@ def test_evaluate_exports_submission_for_navtest_failures_subset():
 
     assert '"navtest_failures_filtered.yaml"' in source
     assert "_navsim_submission.pkl" in source
+
+
+def _reward_scorer(progress, multi=None, threshold=0.1):
+    progress = np.asarray(progress, dtype=np.float64)
+    count = len(progress)
+    if multi is None:
+        multi = np.ones((2, count), dtype=np.float64)
+    weighted = np.ones((4, count), dtype=np.float64)
+    config = SimpleNamespace(
+        progress_distance_threshold=threshold,
+        weighted_metrics_array=np.asarray([5.0, 5.0, 2.0, 0.0]),
+    )
+    return SimpleNamespace(
+        _multi_metrics=np.asarray(multi, dtype=np.float64),
+        _weighted_metrics=weighted,
+        _progress_raw=progress,
+        _config=config,
+    )
+
+
+def _expected_score(progress_component, multiplicative):
+    weighted = (5.0 * progress_component + 5.0 + 2.0) / 12.0
+    return multiplicative * weighted
+
+
+def test_pairwise_progress_is_unchanged_when_multiplicative_is_one():
+    pairwise = _load_pairwise_official_scores()
+    scores, components = pairwise(_reward_scorer([10.0, 5.0]))
+    assert scores.shape == (1,)
+    assert components.shape == (1, 6)
+    assert components[0, 2] == 0.5
+    assert scores[0] == np.float32(_expected_score(0.5, 1.0))
+
+
+def test_pairwise_progress_uses_raw_reference_before_reference_gate():
+    pairwise = _load_pairwise_official_scores()
+    multi = np.ones((2, 2), dtype=np.float64)
+    multi[0, 0] = 0.0
+    scores, components = pairwise(_reward_scorer([10.0, 5.0], multi))
+    assert components[0, 2] == 0.5
+    assert scores[0] == np.float32(_expected_score(0.5, 1.0))
+
+
+def test_pairwise_progress_applies_candidate_gate_after_normalization():
+    pairwise = _load_pairwise_official_scores()
+    multi = np.ones((2, 2), dtype=np.float64)
+    multi[0, 1] = 0.5
+    scores, components = pairwise(_reward_scorer([10.0, 20.0], multi))
+    assert components[0, 2] == 0.5
+    assert scores[0] == np.float32(_expected_score(0.5, 0.5))
+
+
+def test_pairwise_progress_threshold_fallback_precedes_candidate_gate():
+    pairwise = _load_pairwise_official_scores()
+    multi = np.ones((2, 2), dtype=np.float64)
+    multi[0, 1] = 0.5
+    scores, components = pairwise(_reward_scorer([0.01, 0.02], multi))
+    assert components[0, 2] == 0.5
+    assert scores[0] == np.float32(_expected_score(0.5, 0.5))
+
+
+def test_pairwise_progress_preserves_twenty_candidate_order():
+    pairwise = _load_pairwise_official_scores()
+    progress = np.concatenate(([10.0], np.arange(1.0, 21.0)))
+    multi = np.ones((2, 21), dtype=np.float64)
+    multi[0, 1::3] = 0.5
+    scores, components = pairwise(_reward_scorer(progress, multi))
+    candidate_multi = multi.prod(axis=0)[1:]
+    expected_components = np.asarray(
+        [value / max(10.0, value) for value in progress[1:]]
+    ) * candidate_multi
+    expected_scores = np.asarray(
+        [
+            _expected_score(component, gate)
+            for component, gate in zip(expected_components, candidate_multi)
+        ],
+        dtype=np.float32,
+    )
+    assert scores.shape == (20,)
+    assert components.shape == (20, 6)
+    np.testing.assert_allclose(components[:, 2], expected_components)
+    np.testing.assert_allclose(scores, expected_scores)

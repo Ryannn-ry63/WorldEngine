@@ -23,6 +23,12 @@ COMPONENT_NAMES = (
     "comfort",
     "driving_direction_compliance",
 )
+REWARD_CONTRACT = "navsim_pairwise_raw_progress_then_candidate_gate_v1"
+CACHE_METHOD = "frozen_diffusiondrive_selector_v2_progress_fixed_cache"
+REWARD_IMPLEMENTATION = (
+    Path(__file__).resolve().parents[2]
+    / "mmdet3d_plugin/navformer/dense_heads/diffusiondrive_online_pdm_reward.py"
+)
 
 
 class Selector(nn.Sequential):
@@ -76,11 +82,28 @@ def load_cache(path, expected_split=None):
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("status") != "PASS":
         raise RuntimeError(f"cache manifest did not pass: {manifest_path}")
+    if manifest.get("schema_version") != 2:
+        raise RuntimeError(f"cache manifest is not corrected schema v2: {manifest_path}")
+    if manifest.get("method") != CACHE_METHOD:
+        raise RuntimeError(f"cache method is not corrected V2 rescore: {manifest_path}")
+    if manifest.get("reward_contract") != REWARD_CONTRACT:
+        raise RuntimeError(f"cache reward contract drifted: {manifest_path}")
+    reward_sha = sha256_file(REWARD_IMPLEMENTATION)
+    if manifest.get("reward_implementation_sha256") != reward_sha:
+        raise RuntimeError(f"cache was scored by stale reward code: {manifest_path}")
     if manifest.get("cache_sha256") != sha256_file(path):
         raise RuntimeError(f"cache SHA256 mismatch: {path}")
     if expected_split is not None and manifest.get("split") != expected_split:
         raise RuntimeError(f"cache split mismatch: {path}")
     cache = torch.load(path, map_location="cpu")
+    if cache.get("schema_version") != 2:
+        raise RuntimeError(f"cache payload is not corrected schema v2: {path}")
+    if cache.get("reward_contract") != REWARD_CONTRACT:
+        raise RuntimeError(f"cache payload reward contract drifted: {path}")
+    if cache.get("reward_implementation_sha256") != reward_sha:
+        raise RuntimeError(f"cache payload reward implementation drifted: {path}")
+    if cache.get("source_cache_sha256") != manifest.get("source_cache_sha256"):
+        raise RuntimeError(f"cache source provenance drifted: {path}")
     count = len(cache["tokens"])
     required = {
         "candidate_features": (count, 20, 256),
@@ -94,6 +117,16 @@ def load_cache(path, expected_split=None):
             raise RuntimeError(f"{path}: {key} shape drifted")
     if len(cache["scenes"]) != count or len(set(cache["tokens"])) != count:
         raise RuntimeError(f"{path}: token/scene provenance drifted")
+    if not bool(cache["candidate_reward_valid_mask"].all()):
+        raise RuntimeError(f"{path}: corrected reward contains invalid candidates")
+    for key in (
+        "candidate_features",
+        "candidate_rewards",
+        "candidate_reward_components",
+        "reference_logits",
+    ):
+        if not bool(torch.isfinite(cache[key]).all()):
+            raise RuntimeError(f"{path}: {key} contains non-finite values")
     return cache, manifest
 
 
@@ -246,6 +279,14 @@ def main():
     calibration_manifests = [pair[1] for pair in calibration_pairs]
     if [int(row["noise_seed"]) for row in calibration_manifests] != [0, 1, 2]:
         raise RuntimeError("calibration caches must contain noise seeds 0,1,2")
+    all_manifests = [train_manifest, *calibration_manifests]
+    reward_shas = {
+        row.get("reward_implementation_sha256") for row in all_manifests
+    }
+    if reward_shas != {sha256_file(REWARD_IMPLEMENTATION)}:
+        raise RuntimeError("corrected cache reward provenance is inconsistent")
+    if {row.get("reward_contract") for row in all_manifests} != {REWARD_CONTRACT}:
+        raise RuntimeError("corrected cache reward contract is inconsistent")
     train_tokens = set(train_cache["tokens"])
     if any(train_tokens.intersection(cache["tokens"]) for cache in calibration_caches):
         raise RuntimeError("train/calibration token leakage")
@@ -296,6 +337,8 @@ def main():
         state_payload = {
             "schema_version": 2,
             "method": "exact_group_grpo",
+            "reward_contract": REWARD_CONTRACT,
+            "reward_implementation_sha256": sha256_file(REWARD_IMPLEMENTATION),
             "selector_state": {
                 key: value.detach().cpu() for key, value in model.state_dict().items()
             },
@@ -358,6 +401,9 @@ def main():
         "schema_version": 2,
         "status": "PASS",
         "method": "exact_group_grpo",
+        "reward_contract": REWARD_CONTRACT,
+        "reward_implementation": str(REWARD_IMPLEMENTATION),
+        "reward_implementation_sha256": sha256_file(REWARD_IMPLEMENTATION),
         "temperature": args.temperature,
         "learning_rate": args.learning_rate,
         "kl_weight": args.kl_weight,

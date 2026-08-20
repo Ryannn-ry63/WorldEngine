@@ -29,6 +29,18 @@ def parse_args():
     parser.add_argument("--worst-seed-floor", type=float, default=-0.001)
     parser.add_argument("--disagreement-floor", type=float, default=0.02)
     parser.add_argument("--tie-tolerance", type=float, default=0.0002)
+    parser.add_argument("--expected-reward-contract")
+    parser.add_argument(
+        "--allow-predeclared-fallback", action="store_true"
+    )
+    parser.add_argument("--fallback-temperature", type=float, default=1.0)
+    parser.add_argument("--fallback-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--fallback-kl-weight", type=float, default=1e-3)
+    parser.add_argument("--fallback-epoch", type=int, default=32)
+    parser.add_argument(
+        "--experiment-method",
+        default="e2e_diffusiondrive_grpo_selector_v2",
+    )
     return parser.parse_args()
 
 
@@ -133,6 +145,11 @@ def main():
         report = json.loads(report_path.read_text())
         if report.get("status") != "PASS" or report.get("method") != "exact_group_grpo":
             raise RuntimeError(f"invalid V2 report: {report_path}")
+        if (
+            args.expected_reward_contract is not None
+            and report.get("reward_contract") != args.expected_reward_contract
+        ):
+            raise RuntimeError(f"stale V2 reward contract: {report_path}")
         for checkpoint in report["checkpoints"]:
             rows = read_records(
                 checkpoint["calibration_records"],
@@ -188,32 +205,91 @@ def main():
         raise RuntimeError("no V2 candidates found")
 
     eligible = [candidate for candidate in candidates if candidate["eligible"]]
-    pool = eligible or candidates
-    best_gain = max(row["top1_gain_bootstrap"]["mean"] for row in pool)
-    tied = [
-        row
-        for row in pool
-        if row["top1_gain_bootstrap"]["mean"] >= best_gain - args.tie_tolerance
-    ]
-    selected = min(
-        tied,
-        key=lambda row: (
-            row["epoch"],
-            row["kl_weight"],
-            row["temperature"],
-            row["learning_rate"],
-        ),
-    )
+    selection_mode = "calibration_gate"
+    if eligible:
+        best_gain = max(
+            row["top1_gain_bootstrap"]["mean"] for row in eligible
+        )
+        tied = [
+            row
+            for row in eligible
+            if row["top1_gain_bootstrap"]["mean"]
+            >= best_gain - args.tie_tolerance
+        ]
+        selected = min(
+            tied,
+            key=lambda row: (
+                row["epoch"],
+                row["kl_weight"],
+                row["temperature"],
+                row["learning_rate"],
+            ),
+        )
+    elif args.allow_predeclared_fallback:
+        fallback = [
+            row
+            for row in candidates
+            if row["temperature"] == args.fallback_temperature
+            and row["learning_rate"] == args.fallback_learning_rate
+            and row["kl_weight"] == args.fallback_kl_weight
+            and row["epoch"] == args.fallback_epoch
+            and row["train_seed"] == 0
+        ]
+        if len(fallback) != 1:
+            raise RuntimeError(
+                "predeclared fallback did not identify exactly one candidate"
+            )
+        selected = fallback[0]
+        selection_mode = "predeclared_old_hparams_fallback"
+    else:
+        pool = candidates
+        best_gain = max(
+            row["top1_gain_bootstrap"]["mean"] for row in pool
+        )
+        tied = [
+            row
+            for row in pool
+            if row["top1_gain_bootstrap"]["mean"]
+            >= best_gain - args.tie_tolerance
+        ]
+        selected = min(
+            tied,
+            key=lambda row: (
+                row["epoch"],
+                row["kl_weight"],
+                row["temperature"],
+                row["learning_rate"],
+            ),
+        )
     selector_path = Path(selected["selector_state"]).expanduser().resolve()
     if sha256_file(selector_path) != selected["selector_state_sha256"]:
         raise RuntimeError("selected selector-state SHA256 mismatch")
 
-    status = "PASS" if eligible else "CALIBRATION_GATE_FAIL"
+    gate_status = "PASS" if eligible else "CALIBRATION_GATE_FAIL"
+    status = (
+        "PASS"
+        if eligible or args.allow_predeclared_fallback
+        else "CALIBRATION_GATE_FAIL"
+    )
+    old_hparams = [
+        row
+        for row in candidates
+        if row["temperature"] == args.fallback_temperature
+        and row["learning_rate"] == args.fallback_learning_rate
+        and row["kl_weight"] == args.fallback_kl_weight
+        and row["epoch"] == args.fallback_epoch
+        and row["train_seed"] == 0
+    ]
+    if len(old_hparams) != 1:
+        raise RuntimeError("old-hyperparameter comparison candidate is ambiguous")
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": status,
-        "method": "e2e_diffusiondrive_grpo_selector_v2",
+        "gate_status": gate_status,
+        "selection_mode": selection_mode,
+        "method": args.experiment_method,
         "objective": "exact_complete_action_expected_advantage",
+        "reward_contract": args.expected_reward_contract,
         "selection_data": "navtrain_scene_disjoint_calibration_only",
         "baseline": str(baseline),
         "baseline_sha256": baseline_sha,
@@ -225,6 +301,13 @@ def main():
             "selection_disagreement_floor": args.disagreement_floor,
         },
         "selected": selected,
+        "predeclared_fallback": {
+            "temperature": args.fallback_temperature,
+            "learning_rate": args.fallback_learning_rate,
+            "kl_weight": args.fallback_kl_weight,
+            "epoch": args.fallback_epoch,
+        },
+        "old_hyperparameter_comparison_candidate": old_hparams[0],
         "num_candidates": len(candidates),
         "num_eligible_candidates": len(eligible),
         "candidates": sorted(
@@ -238,21 +321,27 @@ def main():
         ),
     }
     selected_checkpoint = output_dir / "selected_checkpoint.pth"
-    if eligible:
+    if status == "PASS":
         materialize_checkpoint(
             baseline,
             selector_path,
             selected_checkpoint,
             {
-                key: selected[key]
-                for key in (
-                    "temperature",
-                    "learning_rate",
-                    "kl_weight",
-                    "train_seed",
-                    "epoch",
-                    "top1_gain_bootstrap",
-                )
+                **{
+                    key: selected[key]
+                    for key in (
+                        "temperature",
+                        "learning_rate",
+                        "kl_weight",
+                        "train_seed",
+                        "epoch",
+                        "top1_gain_bootstrap",
+                    )
+                },
+                "method": args.experiment_method,
+                "reward_contract": args.expected_reward_contract,
+                "selection_mode": selection_mode,
+                "gate_status": gate_status,
             },
         )
         manifest["selected_checkpoint"] = str(selected_checkpoint)

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 SIMENGINE_PYTHON=${SIMENGINE_PYTHON:-/root/miniconda3/envs/simengine/bin/python}
 ALGENGINE_PYTHON=${ALGENGINE_PYTHON:-/root/miniconda3/envs/algengine/bin/python}
@@ -12,6 +13,16 @@ MODEL_NAME=$3
 DATA_TYPE=$4
 REACT_TYPE=$5
 ASSET_NAME=${6:-$DATA_TYPE}
+SCENARIO_PKL=${7:-}
+SPLIT_COUNT=${8:-8}
+if ! [[ "${SPLIT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: SPLIT_COUNT must be a positive integer" >&2
+    exit 2
+fi
+if [[ -n "${SCENARIO_PKL}" && ! -f "${SCENARIO_PKL}" ]]; then
+    echo "ERROR: Scenario pickle does not exist: ${SCENARIO_PKL}" >&2
+    exit 1
+fi
 
 # Resume flag - set to true to skip already completed scenarios
 ENABLE_RESUME=true
@@ -19,11 +30,16 @@ ENABLE_RESUME=true
 # Convert relative paths to absolute paths based on WORLDENGINE_ROOT
 SIMENGINE_ROOT="$WORLDENGINE_ROOT/projects/SimEngine"
 ALGENGINE_ROOT="$WORLDENGINE_ROOT/projects/AlgEngine"
-export PYTHONPATH=$SIMENGINE_ROOT:$ALGENGINE_ROOT:$PYTHONPATH
+export PYTHONPATH=$SIMENGINE_ROOT:$ALGENGINE_ROOT:${PYTHONPATH:-}
 
 # SimEngine setting
 ASSET_FOLDER_PATH="$WORLDENGINE_ROOT/data/sim_engine/assets/${ASSET_NAME}/assets"
 DATAFILE_FOLDER_PATH="data/sim_engine/scenarios/original/${DATA_TYPE}"
+DATA_OVERRIDES=("data_file_folder_path=${DATAFILE_FOLDER_PATH}" "data_pkl_file_name=all_scenarios.pkl")
+if [[ -n "${SCENARIO_PKL}" ]]; then
+    SCENARIO_PKL="$(cd "$(dirname "${SCENARIO_PKL}")" && pwd)/$(basename "${SCENARIO_PKL}")"
+    DATA_OVERRIDES=("data_file_path=${SCENARIO_PKL}")
+fi
 
 # Test path (absolute, relative to WORLDENGINE_ROOT)
 test_path="$WORLDENGINE_ROOT/experiments/closed_loop_exps/${MODEL_NAME}/${DATA_TYPE}_${REACT_TYPE}"
@@ -37,9 +53,6 @@ if [ -d "$test_path" ] && [ "$ENABLE_RESUME" = false ]; then
     exit 1
 fi
 
-# Set error handling
-set -euo pipefail
-
 cleanup() {
   echo "Cleaning up processes..."
   trap - SIGINT SIGTERM EXIT
@@ -51,17 +64,17 @@ cleanup() {
 trap cleanup SIGINT SIGTERM EXIT
 
 # Main execution
-echo "Starting distributed simulation with 8 splits..."
+echo "Starting distributed simulation with ${SPLIT_COUNT} splits..."
 echo "Model: $MODEL_NAME, Type: $REACT_TYPE, Data: $DATA_TYPE, Asset: $ASSET_NAME"
+echo "Scenario pickle: ${SCENARIO_PKL:-default for DATA_TYPE}"
 echo "Resume mode: $ENABLE_RESUME"
 
 cd $SIMENGINE_ROOT
 "$SIMENGINE_PYTHON" worldengine/runner/run_simulation.py \
     debug_mode=True \
     debug_scene_name=null \
-    data_file_folder_path=$DATAFILE_FOLDER_PATH \
+    "${DATA_OVERRIDES[@]}" \
     asset_folder_path=$ASSET_FOLDER_PATH \
-    data_pkl_file_name=all_scenarios.pkl \
     output_dir=$test_path/__WORKER_ID__/WE_output \
     job_name=${DATA_TYPE}_${REACT_TYPE}_${MODEL_NAME} \
     use_planner_actions=true \
@@ -138,12 +151,27 @@ run_planner() {
 }
 
 # Run simulations in parallel
-for i in {0..7}; do
-    run_planner $i &
+planner_pids=()
+for ((i = 0; i < SPLIT_COUNT; i++)); do
+    run_planner "$i" &
+    planner_pids+=("$!")
 done
 
 # Wait for all simulations to complete
-wait
+planner_failed=0
+for planner_pid in "${planner_pids[@]}"; do
+    if ! wait "$planner_pid"; then
+        planner_failed=1
+    fi
+done
+if ! wait "$we_pid"; then
+    echo "WorldEngine process failed" >&2
+    planner_failed=1
+fi
+if [[ "$planner_failed" -ne 0 ]]; then
+    echo "One or more simulation processes failed" >&2
+    exit 1
+fi
 
 echo "All simulation splits completed successfully."
 
@@ -153,4 +181,5 @@ trap - SIGINT SIGTERM EXIT
 cd $SIMENGINE_ROOT
 "$SIMENGINE_PYTHON" scripts/merge_simulation_results.py \
     --test_path "$test_path" \
-    --react_type $REACT_TYPE
+    --react_type "$REACT_TYPE" \
+    --num-splits "$SPLIT_COUNT"
