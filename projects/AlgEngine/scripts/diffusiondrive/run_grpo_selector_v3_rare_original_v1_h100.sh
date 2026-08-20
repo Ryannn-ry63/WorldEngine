@@ -511,11 +511,11 @@ run_summary() {
     local args=()
     for seed in 0 1 2; do
         args+=(
-            --base "${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_formal/formal_eval/e2e_diffusiondrive_reference_paired_s${seed}/summary.json"
-            --common-v3 "${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_progress_fix_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_progress_fix_v1_s${seed}/summary.json"
-            --paired-common "${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_paired_common_s${seed}/summary.json"
-            --rare-frozen "${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_frozen_s${seed}/summary.json"
-            --rare-tuned "${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_tuned_s${seed}/summary.json"
+            --base "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_formal/formal_eval/e2e_diffusiondrive_reference_paired_s${seed}/summary.json"
+            --common-v3 "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_progress_fix_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_progress_fix_v1_s${seed}/summary.json"
+            --paired-common "${seed}=${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_paired_common_s${seed}/summary.json"
+            --rare-frozen "${seed}=${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_frozen_s${seed}/summary.json"
+            --rare-tuned "${seed}=${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_tuned_s${seed}/summary.json"
         )
     done
     "${ALGENGINE_PYTHON}" "${SUMMARIZER}"         "${args[@]}"         --rare-data-audit "${RARE_DATA_ROOT}/rare_data_audit.json"         --tuning-split-audit "${TUNING_SPLIT_ROOT}/split_audit.json"         --certification "${CERTIFICATION_ROOT}/report.json"         --output "${FORMAL_ROOT}/rare_original_comparison.json"
