@@ -168,6 +168,15 @@ experiments/grpo_sources/diffusiondrive_selector_rare_rollout_v1/scenarios/
 
 converter 逐 scenario 保留 chunk，意外中断后执行同一命令会验证并复用完整 chunks。
 
+如果已经开好单卡 H100，希望把 Step A 和下一步 smoke 串行放在同一个任务里，
+可直接执行：
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_prepare_smoke_1h100.sh
+```
+
+该包装器只会在 scenario 准备与审计成功后启动 smoke；任一步失败都会立即退出。
+
 ### Step B：正式长任务前的一卡 H100 全链路 smoke
 
 ```bash
@@ -178,7 +187,26 @@ converter 逐 scenario 保留 chunk，意外中断后执行同一命令会验证
 
 ### Step C：三个 8×H100 collect lanes 并行提交
 
-分别在三个独立 8×H100 任务中运行：
+如果 Step A+B 的单卡串行任务尚未结束，但希望提前提交排队，分别在三个独立
+8×H100 任务中运行以下等待版本：
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh collect-wait 0
+```
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh collect-wait 1
+```
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh collect-wait 2
+```
+
+三个任务等待同一个 `prepare_smoke_status.txt`。当前 commit 的 smoke 为 PASS 后，
+三条 lane 同时开始；若当前 commit 的 smoke 为 FAIL，则全部立即失败退出。默认最多
+等待 12 小时、每 60 秒检查一次。三个 lane 不互相串行。
+
+若 smoke 已经 PASS，也可分别直接运行：
 
 ```bash
 ./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh collect-lane 0
