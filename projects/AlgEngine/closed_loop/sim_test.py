@@ -37,7 +37,7 @@ def sha256_file(path):
 
 
 def save_diffusiondrive_rollout_sidecar(
-    result, cfg, file_monitor, planner_step, provenance
+    result, cfg, file_monitor, planner_step, provenance, source_frame_path=None
 ):
     """Atomically export the exact 20-candidate action set for SimEngine."""
     output_dir = getattr(cfg.sim, 'diffusiondrive_rollout_sidecar_path', '')
@@ -92,6 +92,11 @@ def save_diffusiondrive_rollout_sidecar(
         'source_sample_token': str(result['token']),
         'selected_index': selected_index,
         'deployed_trajectory': np.asarray(result['trajectory'], dtype=np.float32),
+        'raw_observation_path': (
+            None
+            if source_frame_path is None
+            else str(Path(source_frame_path).expanduser().resolve())
+        ),
         'current_reference_logits_max_abs_error': logits_error,
         **provenance,
     }
@@ -257,7 +262,12 @@ async def run_inference_loop(model, cfg, logger, rollout_provenance):
             tmp_path = os.path.join(save_path, f'{file_monitor.prefix}_{planner_step}_tmp.npy')
             np.save(tmp_path, plan_result)
             sidecar_path = save_diffusiondrive_rollout_sidecar(
-                result, cfg, file_monitor, planner_step, rollout_provenance
+                result,
+                cfg,
+                file_monitor,
+                planner_step,
+                rollout_provenance,
+                source_frame_path=current_queue[-1],
             )
             os.rename(tmp_path, os.path.join(save_path, f'{file_monitor.prefix}_{planner_step}.npy'))
             if sidecar_path is not None:

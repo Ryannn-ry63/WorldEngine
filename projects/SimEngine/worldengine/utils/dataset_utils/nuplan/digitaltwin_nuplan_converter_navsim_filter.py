@@ -11,6 +11,8 @@ python worldengine/utils/dataset_utils/nuplan/digitaltwin_nuplan_converter_navsi
 """
 
 import argparse
+import hashlib
+import json
 import numpy as np
 from pyquaternion import Quaternion
 import os
@@ -188,6 +190,27 @@ def create_digitaltwin_info_central(video_scene: VideoScene, args=None):
     digitaltwin_config = video_scene.config
     video_info = list(video_scene_dict.values())[0]
 
+    expected_names = [
+        f"{digitaltwin_config.central_log}-{token}"
+        for token in digitaltwin_config.central_tokens
+    ]
+    if args.resume_chunks and expected_names:
+        reusable = []
+        for scenario_name in expected_names:
+            chunk_file = os.path.join(chunks_dir, f"{scenario_name}.pkl")
+            if not os.path.isfile(chunk_file):
+                break
+            try:
+                with open(chunk_file, "rb") as stream:
+                    payload = pickle.load(stream)
+                if set(payload) != {scenario_name}:
+                    break
+            except (OSError, EOFError, ValueError, pickle.PickleError):
+                break
+            reusable.append(scenario_name)
+        if len(reusable) == len(expected_names):
+            return reusable
+
     log_file = os.path.join(nuplan_db_path, f"{video_info['log_name']}.db")
     assert os.path.exists(log_file), f"Log file {log_file} does not exist."
 
@@ -269,14 +292,135 @@ def parse_args():
     )
 
     parser.add_argument('--num-processes', type=int, default=multiprocessing.cpu_count() - 1)
-    parser.add_argument('--num-splits', type=int, default=8)
+    parser.add_argument(
+        '--num-splits',
+        type=int,
+        default=1,
+        help='Write this many deterministic scenario shard pickles.',
+    )
+    parser.add_argument(
+        '--shards-only',
+        action='store_true',
+        help='Do not also write all_scenarios.pkl (useful for very large sets).',
+    )
+    parser.add_argument(
+        '--expected-scenarios',
+        type=int,
+        help='Fail unless conversion produces exactly this many scenarios.',
+    )
+    parser.add_argument(
+        '--resume-chunks',
+        action='store_true',
+        help='Reuse already complete per-scenario chunks after validating them.',
+    )
 
     args = parser.parse_args()
     return args
 
 
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def deterministic_scenario_shards(scenario_names, num_splits):
+    """Return stable, balanced, disjoint scenario-name shards."""
+    if num_splits < 1:
+        raise ValueError('--num-splits must be positive')
+    ordered = sorted(set(scenario_names))
+    if len(ordered) != len(scenario_names):
+        raise RuntimeError('conversion produced duplicate scenario names')
+    base_size, remainder = divmod(len(ordered), num_splits)
+    shards = []
+    start = 0
+    for split_index in range(num_splits):
+        size = base_size + (1 if split_index < remainder else 0)
+        shards.append(ordered[start:start + size])
+        start += size
+    if start != len(ordered):
+        raise RuntimeError('scenario shard accounting drifted')
+    return shards
+
+
+def load_scenario_chunks(chunks_dir, scenario_names):
+    scenarios = {}
+    for scenario_name in tqdm(scenario_names, desc='Loading chunks'):
+        chunk_file = os.path.join(chunks_dir, f'{scenario_name}.pkl')
+        if not os.path.exists(chunk_file):
+            raise FileNotFoundError(f'chunk file not found: {chunk_file}')
+        with open(chunk_file, 'rb') as stream:
+            chunk_data = pickle.load(stream)
+        if set(chunk_data) != {scenario_name}:
+            raise RuntimeError(f'invalid scenario chunk: {chunk_file}')
+        scenarios.update(chunk_data)
+    return scenarios
+
+
+def write_scenario_outputs(
+    out_dir,
+    chunks_dir,
+    scenario_names,
+    num_splits,
+    shards_only=False,
+):
+    """Materialize deterministic lane files without requiring one giant pickle."""
+    os.makedirs(out_dir, exist_ok=True)
+    shards = deterministic_scenario_shards(scenario_names, num_splits)
+    outputs = []
+    for split_index, names in enumerate(shards):
+        shard_data = load_scenario_chunks(chunks_dir, names)
+        shard_path = os.path.join(
+            out_dir,
+            f'scenario_shard_{split_index:02d}_of_{num_splits:02d}.pkl',
+        )
+        with open(shard_path, 'wb') as stream:
+            pickle.dump(shard_data, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        outputs.append(
+            {
+                'index': split_index,
+                'path': os.path.abspath(shard_path),
+                'sha256': sha256_file(shard_path),
+                'num_scenarios': len(shard_data),
+                'first_scenario': names[0] if names else None,
+                'last_scenario': names[-1] if names else None,
+            }
+        )
+
+    all_path = None
+    if not shards_only:
+        all_scenarios = load_scenario_chunks(chunks_dir, sorted(scenario_names))
+        all_path = os.path.join(out_dir, 'all_scenarios.pkl')
+        with open(all_path, 'wb') as stream:
+            pickle.dump(all_scenarios, stream, protocol=pickle.HIGHEST_PROTOCOL)
+
+    manifest = {
+        'schema_version': 1,
+        'status': 'PASS',
+        'method': 'deterministic_sorted_contiguous_scenario_shards_v1',
+        'num_scenarios': len(scenario_names),
+        'num_splits': num_splits,
+        'shards_only': bool(shards_only),
+        'all_scenarios_path': os.path.abspath(all_path) if all_path else None,
+        'all_scenarios_sha256': sha256_file(all_path) if all_path else None,
+        'shards': outputs,
+    }
+    manifest_path = os.path.join(out_dir, 'scenario_shards_manifest.json')
+    with open(manifest_path, 'w') as stream:
+        json.dump(manifest, stream, indent=2, sort_keys=True)
+        stream.write('\n')
+    return manifest
+
+
 if __name__ == "__main__":
     args = parse_args()
+
+    if args.num_splits < 1:
+        raise ValueError('--num-splits must be positive')
+    if args.expected_scenarios is not None and args.expected_scenarios < 1:
+        raise ValueError('--expected-scenarios must be positive')
 
     out_dir = args.out_dir
 
@@ -331,24 +475,21 @@ if __name__ == "__main__":
         ):
             all_scenario_names.extend(scenario_names)
 
+    all_scenario_names = sorted(all_scenario_names)
     print(f"\nTotal scenarios processed: {len(all_scenario_names)}")
-    print(f"Merging {len(all_scenario_names)} chunk files from {chunks_dir}")
-
-    # Merge all chunk files into final pickle
-    all_scenarios = {}
-    for scenario_name in tqdm(all_scenario_names, desc="Merging chunks"):
-        chunk_file = os.path.join(chunks_dir, f"{scenario_name}.pkl")
-        if os.path.exists(chunk_file):
-            with open(chunk_file, "rb") as f:
-                chunk_data = pickle.load(f)
-                all_scenarios.update(chunk_data)
-        else:
-            print(f"Warning: chunk file not found: {chunk_file}")
-
-    pkl_file_path = f"{args.out_dir}/all_scenarios.pkl"
-    print(f"Saving final result to {pkl_file_path}")
-    os.makedirs(args.out_dir, exist_ok=True)
-    with open(pkl_file_path, "wb") as f:
-        pickle.dump(dict(all_scenarios), f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    print(f"Done! Final pkl contains {len(all_scenarios)} scenarios")
+    if (
+        args.expected_scenarios is not None
+        and len(all_scenario_names) != args.expected_scenarios
+    ):
+        raise RuntimeError(
+            f'converted {len(all_scenario_names)} scenarios; '
+            f'expected {args.expected_scenarios}'
+        )
+    manifest = write_scenario_outputs(
+        args.out_dir,
+        chunks_dir,
+        all_scenario_names,
+        args.num_splits,
+        shards_only=args.shards_only,
+    )
+    print(json.dumps(manifest, sort_keys=True))

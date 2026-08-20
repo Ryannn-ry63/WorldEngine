@@ -326,11 +326,18 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
         if not np.isfinite(scores).all() or not np.isfinite(components).all():
             raise RuntimeError("non-finite dynamic candidate PDM reward")
         record = dict(sidecar)
+        rollout_scene_id = str(self.current_scene.get("id"))
+        origin_token = rollout_scene_id.rsplit("-", 1)[-1]
+        if not origin_token or origin_token == rollout_scene_id:
+            raise RuntimeError(
+                f"cannot recover rare origin token from scene {rollout_scene_id}"
+            )
         record.update(
             schema_version=2,
             record_type="diffusiondrive_closed_loop_candidate_reward",
-            rollout_scene_id=str(self.current_scene.get("id")),
+            rollout_scene_id=rollout_scene_id,
             rollout_scene_token=str(self.current_scene.get("token")),
+            rollout_origin_token=origin_token,
             worldengine_step=int(self.current_step),
             candidate_rewards=np.asarray(scores, dtype=np.float32),
             candidate_reward_components=np.asarray(components, dtype=np.float32),
@@ -338,6 +345,8 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
             reward_component_names=COMPONENT_NAMES,
             sidecar_path=str(sidecar_path.resolve()),
             deployed_candidate_parity_max_abs_error=parity_error,
+            deployed_candidate_reward=float(scores[selected]),
+            oracle_candidate_reward=float(np.max(scores)),
         )
         output_dir = (
             Path(self.engine.global_config['data_output_dir'])

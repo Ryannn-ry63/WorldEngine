@@ -119,14 +119,17 @@ class ScenarioManager(BaseManager):
                 # Mark completed scenarios as covered
                 self.coverage[idx] = 1
 
-        self.available_scenario_indices = remaining_indices
-        self.engine.seed(self.available_scenario_indices[0])
-
         skipped_count = original_count - len(remaining_indices)
-        logger.info(f"Resume: Skipping {skipped_count} completed scenarios, {len(remaining_indices)} remaining.")
-
+        self.available_scenario_indices = remaining_indices
         if len(remaining_indices) == 0:
             logger.info("All scenarios already completed. Nothing to do.")
+            return
+
+        self.engine.seed(remaining_indices[0])
+        logger.info(
+            f"Resume: Skipping {skipped_count} completed scenarios, "
+            f"{len(remaining_indices)} remaining."
+        )
 
     def filter_short_scenarios(self, min_length: int):
         """Filter out scenarios whose log_length is shorter than min_length."""
