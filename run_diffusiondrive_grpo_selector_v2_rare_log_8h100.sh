@@ -160,6 +160,36 @@ for key in ("temperature","learning_rate","kl_weight","epoch"): print(x[key])
 ' "${SWEEP_ROOT}/selection.json"
 }
 
+tuning_ready() {
+    [[ -f "${SWEEP_ROOT}/selection.json" && -f "${CERT_ROOT}/report.json" ]] || return 1
+    json_pass "${SWEEP_ROOT}/selection.json" && json_pass "${CERT_ROOT}/report.json"
+}
+
+wait_for_tuning() {
+    local started now line=""
+    local timeout="${DIFFUSIONDRIVE_V2_TUNE_WAIT_TIMEOUT_SECONDS:-86400}"
+    local poll="${DIFFUSIONDRIVE_V2_TUNE_WAIT_POLL_SECONDS:-30}"
+    local seed0_status="${ROOT}/status_formal-seed_s0.txt"
+    started="$(date +%s)"
+    while ! tuning_ready; do
+        if [[ -f "${seed0_status}" ]]; then
+            IFS= read -r line < "${seed0_status}" || true
+            if [[ "${line}" == FAIL\ * ]]; then
+                echo "Seed 0 tuning/formal job failed: ${line}" >&2
+                return 1
+            fi
+        fi
+        now="$(date +%s)"
+        if (( now - started >= timeout )); then
+            echo "Timed out waiting ${timeout}s for seed 0 tuning certification" >&2
+            return 1
+        fi
+        echo "WAIT seed ${SEED}: fixed result is ready; waiting for seed 0 tuning certification"
+        sleep "${poll}"
+    done
+    echo "PASS seed ${SEED}: verified seed 0 tuning certification"
+}
+
 training_ready() {
     local family="$1" seed="$2" method="$3" epoch="$4"
     local root="${MODEL_ROOT}/${family}/seed${seed}"
@@ -241,8 +271,32 @@ evaluate_family() {
 }
 
 run_formal_seed() {
-    require_selection="${SWEEP_ROOT}/selection.json"
-    [[ -f "${require_selection}" ]] || { echo "Run tune first" >&2; exit 1; }
+    if [[ "${SEED}" == "0" ]] && ! tuning_ready; then
+        CURRENT_STAGE=tune_coordinator
+        run_tune
+    fi
+
+    if [[ "${SEED}" != "0" ]]; then
+        CURRENT_STAGE=train_fixed
+        train_family rare_original_fixed "${SEED}" 0 1 1e-4 1e-3 16 \
+            exact_group_grpo_v2_rare_original_v1 \
+            > "${LOG_DIR}/train_fixed_s${SEED}.log" 2>&1
+        CURRENT_STAGE=evaluate_fixed
+        evaluate_family rare_original_fixed "${SEED}"
+        CURRENT_STAGE=wait_for_seed0_tuning
+        wait_for_tuning
+        readarray -t tuned < <(selected_values)
+        CURRENT_STAGE=train_tuned
+        train_family rare_original_tuned "${SEED}" 0 "${tuned[0]}" "${tuned[1]}" \
+            "${tuned[2]}" "${tuned[3]}" exact_group_grpo_v2_rare_original_tuned_v1 \
+            > "${LOG_DIR}/train_tuned_s${SEED}.log" 2>&1
+        CURRENT_STAGE=evaluate_tuned
+        evaluate_family rare_original_tuned "${SEED}"
+        echo "PASS V2 rare-log coordinated fixed+tuned formal seed ${SEED}"
+        return
+    fi
+
+    tuning_ready
     readarray -t tuned < <(selected_values)
     CURRENT_STAGE=train_fixed_and_tuned
     train_family rare_original_fixed "${SEED}" 0 1 1e-4 1e-3 16 \
@@ -260,7 +314,7 @@ run_formal_seed() {
     evaluate_family rare_original_fixed "${SEED}"
     CURRENT_STAGE=evaluate_tuned
     evaluate_family rare_original_tuned "${SEED}"
-    echo "PASS V2 rare-log fixed+tuned formal seed ${SEED}"
+    echo "PASS V2 rare-log coordinated fixed+tuned formal seed ${SEED}"
 }
 
 run_summary() {

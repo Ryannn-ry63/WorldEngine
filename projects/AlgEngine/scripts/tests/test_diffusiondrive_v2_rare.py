@@ -102,3 +102,25 @@ def test_v2_rollout_entrypoint_reuses_v3_data_and_does_not_collect():
     assert "run_grpo_selector_v3_rare_rollout_collect_h100.sh" not in script
     assert "run_simulation.py" not in script
     assert "--real-cache" in script and "--synthetic-cache" in script
+
+
+def test_v2_formal_seeds_coordinate_tuning_without_extra_allocation():
+    root = SCRIPT_DIR.parents[3]
+    cases = {
+        "run_diffusiondrive_grpo_selector_v2_rare_log_8h100.sh": "rare_original",
+        "run_diffusiondrive_grpo_selector_v2_rare_rollout_8h100.sh": "rare_rollout",
+    }
+    for script_name, family in cases.items():
+        script = (root / script_name).read_text()
+        formal = script.split("run_formal_seed() {", 1)[1].split("\n}\n\n", 1)[0]
+        assert "CURRENT_STAGE=tune_coordinator" in formal
+        assert "run_tune" in formal
+        assert "CURRENT_STAGE=wait_for_seed0_tuning" in formal
+        assert formal.index(f"evaluate_family {family}_fixed") < formal.index(
+            "wait_for_tuning"
+        )
+        assert formal.index("wait_for_tuning") < formal.index(
+            f"train_family {family}_tuned"
+        )
+        assert "DIFFUSIONDRIVE_V2_TUNE_WAIT_TIMEOUT_SECONDS:-86400" in script
+        assert "status_formal-seed_s0.txt" in script

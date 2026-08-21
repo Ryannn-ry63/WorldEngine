@@ -47,13 +47,8 @@ cd /inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine-v2-rare
 ./run_diffusiondrive_grpo_selector_v2_rare_log_1h100_smoke.sh
 ```
 
-Then one 8-H100 tuning allocation:
-
-```bash
-./run_diffusiondrive_grpo_selector_v2_rare_log_8h100.sh tune
-```
-
-After tuning passes, submit these three 8-H100 allocations in parallel:
+Submit only these three 8-H100 allocations. Submit seed 0 first, then seed 1 and
+seed 2 immediately; a separate tuning allocation is no longer required:
 
 ```bash
 ./run_diffusiondrive_grpo_selector_v2_rare_log_8h100.sh formal-seed 0
@@ -61,8 +56,14 @@ After tuning passes, submit these three 8-H100 allocations in parallel:
 ./run_diffusiondrive_grpo_selector_v2_rare_log_8h100.sh formal-seed 2
 ```
 
-Each seed allocation trains fixed and tuned replicas in parallel, then evaluates
-them sequentially. A failure stops that seed immediately. After all three pass, run locally on the one-GPU instance (no 8-H100 queue):
+Seed 0 owns the eight-lane development sweep and one-shot certification, then
+runs its fixed and tuned formal models. Seeds 1 and 2 train and formally evaluate
+the fixed model first, wait for the verified seed-0 tuning result, and then run
+the tuned model. They fail instead of continuing if seed 0 reports failure or if
+the wait exceeds 24 hours. An already verified tuning result is reused. The
+standalone `tune` mode remains available only for recovery/debugging.
+
+After all three pass, run locally on the one-GPU instance (no 8-H100 queue):
 
 ```bash
 ./run_diffusiondrive_grpo_selector_v2_rare_log_8h100.sh summarize
@@ -78,20 +79,23 @@ experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/data/hard_pool.jsonl
 experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/data/synthetic_cache.pt
 ```
 
-Do not recollect for V2. Run:
+Do not recollect for V2. First run the one-H100 smoke:
 
 ```bash
 ./run_diffusiondrive_grpo_selector_v2_rare_rollout_1h100_smoke.sh
-./run_diffusiondrive_grpo_selector_v2_rare_rollout_8h100.sh tune
 ```
 
-After tuning passes, submit the three seeds in parallel:
+Then submit only these three 8-H100 allocations, with seed 0 submitted first:
 
 ```bash
 ./run_diffusiondrive_grpo_selector_v2_rare_rollout_8h100.sh formal-seed 0
 ./run_diffusiondrive_grpo_selector_v2_rare_rollout_8h100.sh formal-seed 1
 ./run_diffusiondrive_grpo_selector_v2_rare_rollout_8h100.sh formal-seed 2
 ```
+
+The same coordinator contract applies: seed 0 performs tuning/certification,
+while seeds 1 and 2 do fixed work before waiting for the tuned parameters. The
+standalone `tune` mode is optional recovery/debugging only.
 
 Then aggregate locally on the one-GPU instance:
 
