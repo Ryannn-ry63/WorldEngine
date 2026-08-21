@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeo pipefail
 
-MODE="${1:?usage: $0 collect-lane LANE | collect-wait LANE | finish | finalize}"
+MODE="${1:?usage: $0 collect-lane LANE | collect-wait LANE | recover-collection | finish | finalize}"
 WORLDENGINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${WORLDENGINE_ROOT}/projects/AlgEngine/scripts/diffusiondrive"
 
@@ -64,6 +64,13 @@ case "${MODE}" in
         exec "${SCRIPT_DIR}/run_grpo_selector_v3_rare_rollout_collect_h100.sh" \
             "${LANE}" -1 formal
         ;;
+    recover-collection)
+        if [[ "${#}" -ne 1 ]]; then
+            echo "recover-collection takes no additional arguments" >&2
+            exit 2
+        fi
+        exec "${WORLDENGINE_ROOT}/run_diffusiondrive_grpo_selector_v3_rare_rollout_recover_local.sh"
+        ;;
     finish)
         if [[ "${#}" -ne 1 ]]; then
             echo "finish takes no additional arguments" >&2
@@ -84,7 +91,7 @@ case "${MODE}" in
         exec "${SCRIPT_DIR}/run_grpo_selector_v3_rare_rollout_finish_h100.sh"
         ;;
     *)
-        echo "usage: $0 collect-lane LANE | collect-wait LANE | finish | finalize" >&2
+        echo "usage: $0 collect-lane LANE | collect-wait LANE | recover-collection | finish | finalize" >&2
         exit 2
         ;;
 esac

@@ -220,7 +220,18 @@ converter 逐 scenario 保留 chunk，意外中断后执行同一命令会验证
 ./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh collect-lane 2
 ```
 
-同一 lane 中断后直接提交完全相同的命令。`completed_scenarios` 是持久 resume ledger；脚本只清理进程级旧 completion flag，不删除已完成 scenario、raw observation 或 reward record。最终 audit 允许“先失败、后续成功”的历史，但要求每个输入 scene 最终成功且严格有 steps 4..11 共 8 条记录。
+同一 lane 中断后直接提交完全相同的命令。`completed_scenarios` 是持久 resume ledger；脚本只清理进程级旧 completion flag，不删除已完成 scenario、raw observation 或 reward record。最终 audit 允许“先失败、后续成功”的历史，但要求每个可模拟 scene 最终成功且严格有 steps 4..11 共 8 条记录。仅当 scenario shard 内的 `log_length < 20` 时允许排除；每个排除项必须在 collection audit 中记录 scene id、实际长度和证据哈希。
+
+如果三条 lane 已完成模拟，但旧版审计因短场景仍被计入输入覆盖而在
+`premerge_audit` 退出，不要重新进行 8×H100 rollout。使用 CPU-only 恢复入口：
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh recover-collection
+```
+
+该命令复用已有 split records，依次完成三条 lane 的新版 premerge audit、merge
+和 final audit。正式数据合同要求全部 rare token 被严格分解为“已有完整 rollout”
+或“有长度证据的不可模拟短场景”，不允许未知缺失。
 
 按此前 412 scenes 约 9 小时估算，每个约 2,090-scene lane 约 40–50 小时；三个 lane 并行时墙钟仍约 40–50 小时。
 

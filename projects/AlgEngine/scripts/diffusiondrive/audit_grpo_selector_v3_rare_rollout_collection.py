@@ -14,6 +14,8 @@ import numpy as np
 
 
 BASELINE_SHA256 = "1c450bad0cf62ab9110a8101d2ff6c96984541bd975ddea598ddb2add086a514"
+AUDIT_METHOD = "diffusiondrive_v3_rare_rollout_collection_audit_v2"
+REQUIRED_MINIMUM_LOG_LENGTH = 20
 COMPONENT_NAMES = (
     "no_at_fault_collisions",
     "drivable_area_compliance",
@@ -32,15 +34,43 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_scenario_ids(path: Path, maximum_scenarios: int | None = None) -> set[str]:
+def load_scenario_contract(
+    path: Path, maximum_scenarios: int | None = None
+) -> tuple[set[str], set[str], dict[str, int]]:
     with path.open("rb") as stream:
         payload = pickle.load(stream)
     if not isinstance(payload, dict) or not payload:
         raise RuntimeError(f"invalid or empty scenario shard: {path}")
-    values = list(payload)
+    values = list(payload.items())
     if maximum_scenarios is not None:
         values = values[:maximum_scenarios]
-    return {str(value) for value in values}
+    input_scenes = {str(scene_id) for scene_id, _ in values}
+    excluded_short: dict[str, int] = {}
+    for scene_id, scene in values:
+        if not isinstance(scene, dict) or "log_length" not in scene:
+            raise RuntimeError(f"scenario has no auditable log_length: {scene_id}")
+        try:
+            log_length = int(scene["log_length"])
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(
+                f"scenario has invalid log_length: {scene_id}"
+            ) from error
+        if log_length < 0:
+            raise RuntimeError(f"scenario has negative log_length: {scene_id}")
+        if log_length < REQUIRED_MINIMUM_LOG_LENGTH:
+            excluded_short[str(scene_id)] = log_length
+    collectable_scenes = input_scenes - set(excluded_short)
+    if not collectable_scenes:
+        raise RuntimeError("scenario shard has no collectable scenarios")
+    return input_scenes, collectable_scenes, excluded_short
+
+
+def short_exclusion_digest(excluded_short: dict[str, int]) -> str:
+    payload = "".join(
+        f"{scene_id}\t{excluded_short[scene_id]}\n"
+        for scene_id in sorted(excluded_short)
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def load_reports(root: Path) -> tuple[list[Path], dict[str, list[bool]]]:
@@ -107,7 +137,9 @@ def audit_lane(
     expected_workers: int,
     maximum_scenarios: int | None,
 ) -> dict:
-    expected_scenes = load_scenario_ids(scenario_file, maximum_scenarios)
+    input_scenes, expected_scenes, excluded_short = load_scenario_contract(
+        scenario_file, maximum_scenarios
+    )
     report_paths, outcomes = load_reports(root)
     completed_paths, completed_scenes = load_completed_scenarios(root)
     unknown_reports = set(outcomes) - expected_scenes
@@ -240,9 +272,9 @@ def audit_lane(
         )
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "PASS",
-        "method": "diffusiondrive_v3_rare_rollout_collection_audit_v1",
+        "method": AUDIT_METHOD,
         "layout": layout,
         "source_policy": "immutable_epoch100_diffusiondrive",
         "checkpoint_sha256": BASELINE_SHA256,
@@ -251,6 +283,7 @@ def audit_lane(
         "config_sha256": next(iter(config_shas)),
         "scenario_file": str(scenario_file),
         "scenario_file_sha256": sha256_file(scenario_file),
+        "num_input_scenarios": len(input_scenes),
         "num_scenarios": len(expected_scenes),
         "num_records": len(seen),
         "records_per_scene": expected_records_per_scene,
@@ -270,6 +303,16 @@ def audit_lane(
             "eligible_records": eligible,
             "eligible_deployed_failure_records": eligible_plan_failure,
             "eligible_low_ep_records": eligible_low_ep,
+        },
+        "short_scenario_exclusion": {
+            "policy": "exclude_only_when_log_length_is_below_required_minimum_v1",
+            "required_minimum_log_length": REQUIRED_MINIMUM_LOG_LENGTH,
+            "count": len(excluded_short),
+            "scenes": [
+                {"scene_id": scene_id, "log_length": excluded_short[scene_id]}
+                for scene_id in sorted(excluded_short)
+            ],
+            "sha256": short_exclusion_digest(excluded_short),
         },
         "mean_deployed_reward": float(np.mean(selected_rewards)),
         "mean_oracle_reward": float(np.mean(oracle_rewards)),

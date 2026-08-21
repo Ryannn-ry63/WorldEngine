@@ -17,9 +17,12 @@ import grpo_selector_v3_cached_common as common
 import train_grpo_selector_v3_cached as standard
 import train_grpo_selector_v3_cached_rare_original as rare_trainer
 from audit_grpo_selector_v3_rare_rollout_collection import (
+    AUDIT_METHOD,
     BASELINE_SHA256,
     COMPONENT_NAMES,
+    REQUIRED_MINIMUM_LOG_LENGTH,
     senior_v1_filter,
+    short_exclusion_digest,
 )
 
 
@@ -84,8 +87,8 @@ def load_collection_audit(path: Path, root: Path) -> dict:
     payload = json.loads(path.read_text())
     if (
         payload.get("status") != "PASS"
-        or payload.get("method")
-        != "diffusiondrive_v3_rare_rollout_collection_audit_v1"
+        or payload.get("method") != AUDIT_METHOD
+        or payload.get("schema_version") != 2
         or payload.get("layout") != "merged"
         or payload.get("source_policy") != "immutable_epoch100_diffusiondrive"
         or payload.get("checkpoint_sha256") != BASELINE_SHA256
@@ -93,7 +96,65 @@ def load_collection_audit(path: Path, root: Path) -> dict:
         raise RuntimeError(f"collection audit contract did not pass: {path}")
     if int(payload.get("num_records", -1)) != len(rollout_record_paths(root)):
         raise RuntimeError(f"collection audit/file count drifted: {path}")
+    exclusion = payload.get("short_scenario_exclusion")
+    if not isinstance(exclusion, dict):
+        raise RuntimeError(f"collection audit has no short-scene contract: {path}")
+    scenes = exclusion.get("scenes")
+    if (
+        exclusion.get("required_minimum_log_length")
+        != REQUIRED_MINIMUM_LOG_LENGTH
+        or not isinstance(scenes, list)
+        or int(exclusion.get("count", -1)) != len(scenes)
+        or int(payload.get("num_input_scenarios", -1))
+        != int(payload.get("num_scenarios", -1)) + len(scenes)
+    ):
+        raise RuntimeError(f"collection short-scene contract drifted: {path}")
+    excluded = {}
+    for row in scenes:
+        if not isinstance(row, dict):
+            raise RuntimeError(f"invalid short-scene row: {path}")
+        scene_id = str(row.get("scene_id", ""))
+        log_length = int(row.get("log_length", -1))
+        if not scene_id or log_length < 0 or log_length >= REQUIRED_MINIMUM_LOG_LENGTH:
+            raise RuntimeError(f"invalid short-scene evidence: {path}")
+        if scene_id in excluded:
+            raise RuntimeError(f"duplicate short-scene evidence: {path}")
+        excluded[scene_id] = log_length
+    if short_exclusion_digest(excluded) != exclusion.get("sha256"):
+        raise RuntimeError(f"short-scene evidence hash drifted: {path}")
     return payload
+
+
+def formal_collection_contract(
+    audits: list[dict], pair_by_rare: dict[str, dict]
+) -> tuple[dict[str, int], set[str]]:
+    excluded_short: dict[str, int] = {}
+    for audit in audits:
+        for row in audit["short_scenario_exclusion"]["scenes"]:
+            scene_id = str(row["scene_id"])
+            if scene_id in excluded_short:
+                raise RuntimeError("short scene appears in multiple collection lanes")
+            excluded_short[scene_id] = int(row["log_length"])
+    excluded_origins = {
+        scene_id.rsplit("-", 1)[-1] for scene_id in excluded_short
+    }
+    if len(excluded_origins) != len(excluded_short):
+        raise RuntimeError("short-scene exclusions do not map one-to-one to rare tokens")
+    unknown_exclusions = excluded_origins - set(pair_by_rare)
+    if unknown_exclusions:
+        raise RuntimeError(
+            "short-scene exclusions are outside the rare pair contract: "
+            f"unknown={len(unknown_exclusions)}"
+        )
+    input_scenarios = sum(int(row["num_input_scenarios"]) for row in audits)
+    collectable_scenarios = sum(int(row["num_scenarios"]) for row in audits)
+    if input_scenarios != len(pair_by_rare):
+        raise RuntimeError("formal collection input does not cover all rare rows")
+    if collectable_scenarios + len(excluded_short) != len(pair_by_rare):
+        raise RuntimeError("formal collectable + excluded accounting is incomplete")
+    if sum(int(row["num_records"]) for row in audits) != 8 * collectable_scenarios:
+        raise RuntimeError("formal record count does not cover all collectable rows")
+    return excluded_short, excluded_origins
 
 
 def load_record(path: Path, pair_by_rare: dict[str, dict]) -> dict:
@@ -255,6 +316,8 @@ def build_data(
         load_collection_audit(path, root)
         for path, root in zip(lane_audits, lane_roots)
     ]
+    excluded_short: dict[str, int] = {}
+    excluded_origins: set[str] = set()
     if len({row["code_sha"] for row in audits}) != 1:
         raise RuntimeError("collection lanes used different code revisions")
     if len({row["config_sha256"] for row in audits}) != 1:
@@ -270,10 +333,9 @@ def build_data(
             raise RuntimeError("formal collection must use 8 records and 8 workers per lane")
         if len({row.get("scenario_file_sha256") for row in audits}) != expected_lanes:
             raise RuntimeError("formal collection lanes do not use distinct scenario shards")
-        if sum(int(row["num_scenarios"]) for row in audits) != len(pair_rows):
-            raise RuntimeError("formal collection scenario count does not cover all rare rows")
-        if sum(int(row["num_records"]) for row in audits) != 8 * len(pair_rows):
-            raise RuntimeError("formal collection record count does not cover all rare rows")
+        excluded_short, excluded_origins = formal_collection_contract(
+            audits, pair_by_rare
+        )
 
     all_rows = []
     seen = set()
@@ -290,11 +352,12 @@ def build_data(
             source_digest.update(sha256_file(path).encode("ascii"))
     all_rows.sort(key=lambda row: row["identity"])
     collected_origins = {row["origin_rare_token"] for row in all_rows}
-    if expected_lanes == 3 and collected_origins != set(pair_by_rare):
+    expected_collected_origins = set(pair_by_rare) - excluded_origins
+    if expected_lanes == 3 and collected_origins != expected_collected_origins:
         raise RuntimeError(
-            "formal collection does not exactly cover every origin rare token: "
-            f"missing={len(set(pair_by_rare) - collected_origins)} "
-            f"extra={len(collected_origins - set(pair_by_rare))}"
+            "formal collection does not exactly cover every collectable rare token: "
+            f"missing={len(expected_collected_origins - collected_origins)} "
+            f"extra={len(collected_origins - expected_collected_origins)}"
         )
     eligible_rows = [row for row in all_rows if row["eligible"]]
     if len(eligible_rows) < minimum_synthetic:
@@ -405,7 +468,20 @@ def build_data(
         ),
         "raw_rollout_records": len(all_rows),
         "complete_rare_origin_coverage": collected_origins == set(pair_by_rare),
+        "complete_collectable_rare_origin_coverage": (
+            collected_origins == expected_collected_origins
+        ),
+        "complete_rare_origin_accounting": (
+            collected_origins.union(excluded_origins) == set(pair_by_rare)
+            and not collected_origins.intersection(excluded_origins)
+        ),
         "collected_origin_rare_tokens": len(collected_origins),
+        "excluded_short_origin_rare_tokens": len(excluded_origins),
+        "short_scenario_exclusion": {
+            "required_minimum_log_length": REQUIRED_MINIMUM_LOG_LENGTH,
+            "count": len(excluded_short),
+            "evidence_sha256": short_exclusion_digest(excluded_short),
+        },
         "filtered_synthetic_records": len(eligible_rows),
         "filter_counts": dict(sorted(filter_counts.items())),
         "split_counts": split_counts,
@@ -437,6 +513,10 @@ def build_data(
                 "audit": str(path),
                 "audit_sha256": sha256_file(path),
                 "num_scenarios": audit["num_scenarios"],
+                "num_input_scenarios": audit["num_input_scenarios"],
+                "excluded_short_scenarios": audit[
+                    "short_scenario_exclusion"
+                ]["count"],
                 "num_records": audit["num_records"],
             }
             for root, path, audit in zip(lane_roots, lane_audits, audits)

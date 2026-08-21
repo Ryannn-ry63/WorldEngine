@@ -163,7 +163,7 @@ def write_collection_fixture(tmp_path: Path):
     scene = "2021.01.01.00.00.00_veh-01_00000_00001-rare"
     scenario_file = tmp_path / "scenarios.pkl"
     with scenario_file.open("wb") as stream:
-        pickle.dump({scene: {"id": scene}}, stream)
+        pickle.dump({scene: {"id": scene, "log_length": 20}}, stream)
     report = tmp_path / "runner_report_1.json"
     report.write_text(
         json.dumps(
@@ -256,6 +256,42 @@ def test_resume_audit_accepts_success_after_prior_failure(tmp_path):
     assert report["scenarios_with_prior_failed_attempts"] == 1
 
 
+def test_collection_audit_excludes_only_proven_short_scenarios(tmp_path):
+    scene, scenario_file = write_collection_fixture(tmp_path)
+    short_scene = "2021.01.01.00.00.00_veh-01_00000_00001-short"
+    with scenario_file.open("rb") as stream:
+        scenarios = pickle.load(stream)
+    scenarios[short_scene] = {"id": short_scene, "log_length": 19}
+    with scenario_file.open("wb") as stream:
+        pickle.dump(scenarios, stream)
+
+    report = audit.audit_lane(
+        tmp_path,
+        scenario_file,
+        "split",
+        "rare-rollout-test",
+        "code",
+        8,
+        1,
+        None,
+    )
+    exclusion = report["short_scenario_exclusion"]
+    assert report["schema_version"] == 2
+    assert report["method"] == audit.AUDIT_METHOD
+    assert report["num_input_scenarios"] == 2
+    assert report["num_scenarios"] == 1
+    assert exclusion["count"] == 1
+    assert exclusion["required_minimum_log_length"] == 20
+    assert exclusion["scenes"] == [
+        {"scene_id": short_scene, "log_length": 19}
+    ]
+    assert exclusion["sha256"] == audit.short_exclusion_digest(
+        {short_scene: 19}
+    )
+    assert report["completed_scenarios"] == 1
+    assert scene not in {row["scene_id"] for row in exclusion["scenes"]}
+
+
 def test_formal_compute_contract_matches_rare_original():
     counts = [
         rare_count + common_count
@@ -310,8 +346,15 @@ def test_formal_builder_requires_exact_origin_rare_coverage(tmp_path, monkeypatc
             "records_per_scene": 8,
             "num_workers": 8,
             "scenario_file_sha256": f"scenario_{lane}",
+            "num_input_scenarios": 1,
             "num_scenarios": 1,
             "num_records": 8,
+            "short_scenario_exclusion": {
+                "required_minimum_log_length": 20,
+                "count": 0,
+                "scenes": [],
+                "sha256": audit.short_exclusion_digest({}),
+            },
         }
         for lane, path in enumerate(lane_audits)
     }
@@ -335,7 +378,7 @@ def test_formal_builder_requires_exact_origin_rare_coverage(tmp_path, monkeypatc
     monkeypatch.setattr(builder, "sha256_file", lambda _path: "sha")
 
     with np.testing.assert_raises_regex(
-        RuntimeError, "does not exactly cover every origin rare token"
+        RuntimeError, "does not exactly cover every collectable rare token"
     ):
         builder.build_data(
             lane_roots,
@@ -347,6 +390,32 @@ def test_formal_builder_requires_exact_origin_rare_coverage(tmp_path, monkeypatc
             minimum_synthetic=0,
             expected_lanes=3,
         )
+
+
+def test_formal_collection_contract_accounts_for_short_origins():
+    pairs = {token: {} for token in ("rare_a", "rare_b", "rare_c", "rare_d")}
+    audits = []
+    for lane, origin in enumerate(("rare_a", "rare_c", "rare_d")):
+        short_rows = []
+        if lane == 0:
+            short_rows = [
+                {
+                    "scene_id": "2021.01.01.00.00.00_veh-01_00000_00001-rare_b",
+                    "log_length": 19,
+                }
+            ]
+        audits.append(
+            {
+                "num_input_scenarios": 1 + len(short_rows),
+                "num_scenarios": 1,
+                "num_records": 8,
+                "short_scenario_exclusion": {"scenes": short_rows},
+                "origin": origin,
+            }
+        )
+    excluded, origins = builder.formal_collection_contract(audits, pairs)
+    assert len(excluded) == 1
+    assert origins == {"rare_b"}
 
 
 def test_tiny_training_starts_from_zero_and_balances_common_hard(
