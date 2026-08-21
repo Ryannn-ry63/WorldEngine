@@ -62,7 +62,7 @@ After tuning passes, submit these three 8-H100 allocations in parallel:
 ```
 
 Each seed allocation trains fixed and tuned replicas in parallel, then evaluates
-them sequentially. A failure stops that seed immediately. After all three pass:
+them sequentially. A failure stops that seed immediately. After all three pass, run locally on the one-GPU instance (no 8-H100 queue):
 
 ```bash
 ./run_diffusiondrive_grpo_selector_v2_rare_log_8h100.sh summarize
@@ -93,7 +93,7 @@ After tuning passes, submit the three seeds in parallel:
 ./run_diffusiondrive_grpo_selector_v2_rare_rollout_8h100.sh formal-seed 2
 ```
 
-Then aggregate:
+Then aggregate locally on the one-GPU instance:
 
 ```bash
 ./run_diffusiondrive_grpo_selector_v2_rare_rollout_8h100.sh summarize

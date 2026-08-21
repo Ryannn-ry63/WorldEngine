@@ -15,7 +15,11 @@ if [[ "${MODE}" == "formal-seed" && ! "${SEED}" =~ ^[012]$ ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/projects/AlgEngine/scripts/diffusiondrive"
-export DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=8
+if [[ "${MODE}" == "summarize" ]]; then
+    export DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=1
+else
+    export DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=8
+fi
 export DIFFUSIONDRIVE_GRPO_CONFIG="${SCRIPT_DIR}/../../configs/diffusiondrive/e2e_diffusiondrive_grpo_selector_v2_rare.py"
 . "${SCRIPT_DIR}/grpo_selector_v2_rare_h100_env.sh"
 
@@ -279,7 +283,9 @@ run_summary() {
         --output "${FORMAL_ROOT}/v2_rare_original_comparison.json"
 }
 
-run_preflight
+if [[ "${MODE}" != "summarize" ]]; then
+    run_preflight
+fi
 case "${MODE}" in
     preflight) ;;
     tune) run_tune ;;
