@@ -3,6 +3,28 @@
 
 set -Eeo pipefail
 
+MODE="${1:-all}"
+TARGET_SEED=""
+case "${MODE}" in
+    all)
+        [[ "${#}" -eq 0 ]] || {
+            echo "usage: $0 [seed {0|1|2}]" >&2
+            exit 2
+        }
+        ;;
+    seed)
+        TARGET_SEED="${2:-}"
+        if [[ "${#}" -ne 2 || ! "${TARGET_SEED}" =~ ^[0-2]$ ]]; then
+            echo "usage: $0 seed {0|1|2}" >&2
+            exit 2
+        fi
+        ;;
+    *)
+        echo "usage: $0 [seed {0|1|2}]" >&2
+        exit 2
+        ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DIFFUSIONDRIVE_GRPO_CONFIG="${SCRIPT_DIR}/../../configs/diffusiondrive/e2e_diffusiondrive_grpo_selector_v3.py"
 . "${SCRIPT_DIR}/grpo_selector_h100_env.sh"
@@ -20,10 +42,19 @@ MATERIALIZER="${SCRIPT_DIR}/materialize_grpo_selector_v3.py"
 CHECKPOINT_AUDIT="${SCRIPT_DIR}/audit_grpo_selector_v3_checkpoint.py"
 FORMAL_TABLE="${SCRIPT_DIR}/run_grpo_selector_formal_table_h100.sh"
 SUMMARIZER="${SCRIPT_DIR}/summarize_grpo_selector_v3_rare_rollout.py"
-STATUS="${ROOT}/finish_status.txt"
+if [[ "${MODE}" == "seed" ]]; then
+    RUN_LABEL="seed${TARGET_SEED}"
+    STATUS="${ROOT}/finish_${RUN_LABEL}_status.txt"
+    LOG_BASENAME="finish_${RUN_LABEL}"
+else
+    RUN_LABEL="all"
+    # Preserve the original combined-pipeline paths for backward compatibility.
+    STATUS="${ROOT}/finish_status.txt"
+    LOG_BASENAME="finish"
+fi
 LOG_DIR="${ROOT}/logs"
 mkdir -p "${LOG_DIR}"
-LOG_FILE="${LOG_DIR}/finish_$(date -u +%Y%m%dT%H%M%SZ).log"
+LOG_FILE="${LOG_DIR}/${LOG_BASENAME}_$(date -u +%Y%m%dT%H%M%SZ).log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 CURRENT_STAGE=static_preflight
@@ -151,10 +182,20 @@ train_seed() {
     echo "PASS rare-rollout model seed ${seed}"
 }
 
-CURRENT_STAGE=train_three_replicas
+CURRENT_STAGE="train_${RUN_LABEL}"
 train_pids=()
-for seed in 0 1 2; do
-    train_seed "${seed}" "${seed}" > "${LOG_DIR}/train_seed${seed}.log" 2>&1 &
+if [[ "${MODE}" == "seed" ]]; then
+    TRAIN_SEEDS=("${TARGET_SEED}")
+else
+    TRAIN_SEEDS=(0 1 2)
+fi
+for seed in "${TRAIN_SEEDS[@]}"; do
+    if [[ "${MODE}" == "seed" ]]; then
+        gpu=0
+    else
+        gpu="${seed}"
+    fi
+    train_seed "${seed}" "${gpu}" > "${LOG_DIR}/train_seed${seed}.log" 2>&1 &
     train_pids+=("$!")
 done
 training_failure=0
@@ -167,7 +208,7 @@ done
     echo "One or more training replicas failed; inspect ${LOG_DIR}/train_seed*.log" >&2
     exit 1
 }
-for seed in 0 1 2; do
+for seed in "${TRAIN_SEEDS[@]}"; do
     training_ready "${seed}"
 done
 
@@ -189,7 +230,7 @@ assert summary["checkpoint_sha256"]==manifest["checkpoint_sha256"]
 export DIFFUSIONDRIVE_GRPO_FORMAL_ROOT="${FORMAL_ROOT}"
 export DIFFUSIONDRIVE_GRPO_POLICY_TEMPERATURE=1.0
 export DIFFUSIONDRIVE_GRPO_KL_WEIGHT=0.001
-for seed in 0 1 2; do
+for seed in "${TRAIN_SEEDS[@]}"; do
     CURRENT_STAGE="formal_eval_seed${seed}"
     if evaluation_ready "${seed}"; then
         echo "SKIP verified rare-rollout formal evaluation seed ${seed}"
@@ -203,25 +244,32 @@ for seed in 0 1 2; do
     evaluation_ready "${seed}"
 done
 
-CURRENT_STAGE=aggregate_formal_results
-summary_args=()
-for seed in 0 1 2; do
-    summary_args+=(
-        --base "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_formal/formal_eval/e2e_diffusiondrive_reference_paired_s${seed}/summary.json"
-        --common-v3 "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_progress_fix_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_progress_fix_v1_s${seed}/summary.json"
-        --rare-frozen "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_frozen_s${seed}/summary.json"
-        --rare-tuned "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_tuned_s${seed}/summary.json"
-        --rare-rollout "${seed}=${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s${seed}/summary.json"
-    )
-done
-"${ALGENGINE_PYTHON}" "${SUMMARIZER}" "${summary_args[@]}" \
-    --data-manifest "${DATA_ROOT}/manifest.json" \
-    --output "${FORMAL_ROOT}/rare_rollout_comparison.json"
+if [[ "${MODE}" == "all" ]]; then
+    CURRENT_STAGE=aggregate_formal_results
+    summary_args=()
+    for seed in 0 1 2; do
+        summary_args+=(
+            --base "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_formal/formal_eval/e2e_diffusiondrive_reference_paired_s${seed}/summary.json"
+            --common-v3 "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_progress_fix_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_progress_fix_v1_s${seed}/summary.json"
+            --rare-frozen "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_frozen_s${seed}/summary.json"
+            --rare-tuned "${seed}=${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_tuned_s${seed}/summary.json"
+            --rare-rollout "${seed}=${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s${seed}/summary.json"
+        )
+    done
+    "${ALGENGINE_PYTHON}" "${SUMMARIZER}" "${summary_args[@]}" \
+        --data-manifest "${DATA_ROOT}/manifest.json" \
+        --output "${FORMAL_ROOT}/rare_rollout_comparison.json"
+fi
 
 CURRENT_STAGE=complete
 printf 'PASS code_sha=%s completed_utc=%s\n' \
     "${CODE_SHA}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${STATUS}"
 trap - ERR
-echo "PASS DiffusionDrive V3 rare-rollout finish pipeline"
-echo "comparison: ${FORMAL_ROOT}/rare_rollout_comparison.md"
+if [[ "${MODE}" == "seed" ]]; then
+    echo "PASS DiffusionDrive V3 rare-rollout finish seed ${TARGET_SEED}"
+    echo "summary: ${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s${TARGET_SEED}/summary.json"
+else
+    echo "PASS DiffusionDrive V3 rare-rollout finish pipeline"
+    echo "comparison: ${FORMAL_ROOT}/rare_rollout_comparison.md"
+fi
 echo "persistent_log: ${LOG_FILE}"

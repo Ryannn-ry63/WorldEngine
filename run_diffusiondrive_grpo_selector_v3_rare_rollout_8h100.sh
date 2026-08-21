@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeo pipefail
 
-MODE="${1:?usage: $0 collect-lane LANE | collect-wait LANE | recover-collection | finish | finalize}"
+MODE="${1:?usage: $0 collect-lane LANE | collect-wait LANE | recover-collection | finish | finish-seed SEED | summarize | finalize}"
 WORLDENGINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${WORLDENGINE_ROOT}/projects/AlgEngine/scripts/diffusiondrive"
 
@@ -79,6 +79,22 @@ case "${MODE}" in
         export DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=8
         exec "${SCRIPT_DIR}/run_grpo_selector_v3_rare_rollout_finish_h100.sh"
         ;;
+    finish-seed)
+        SEED="${2:?usage: $0 finish-seed SEED}"
+        if [[ "${#}" -ne 2 || ! "${SEED}" =~ ^[0-2]$ ]]; then
+            echo "finish-seed requires exactly one seed in {0,1,2}" >&2
+            exit 2
+        fi
+        export DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=8
+        exec "${SCRIPT_DIR}/run_grpo_selector_v3_rare_rollout_finish_h100.sh" seed "${SEED}"
+        ;;
+    summarize)
+        if [[ "${#}" -ne 1 ]]; then
+            echo "summarize takes no additional arguments" >&2
+            exit 2
+        fi
+        exec "${WORLDENGINE_ROOT}/run_diffusiondrive_grpo_selector_v3_rare_rollout_summarize_local.sh"
+        ;;
     finalize)
         if [[ "${#}" -ne 1 ]]; then
             echo "finalize takes no additional arguments" >&2
@@ -91,7 +107,7 @@ case "${MODE}" in
         exec "${SCRIPT_DIR}/run_grpo_selector_v3_rare_rollout_finish_h100.sh"
         ;;
     *)
-        echo "usage: $0 collect-lane LANE | collect-wait LANE | recover-collection | finish | finalize" >&2
+        echo "usage: $0 collect-lane LANE | collect-wait LANE | recover-collection | finish | finish-seed SEED | summarize | finalize" >&2
         exit 2
         ;;
 esac

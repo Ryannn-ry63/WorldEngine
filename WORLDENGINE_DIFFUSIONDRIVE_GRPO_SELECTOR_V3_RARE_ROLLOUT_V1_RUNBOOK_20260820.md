@@ -282,6 +282,31 @@ rare_rollout_comparison.md
 
 finish 预计约 8–10 小时，主要由三个串行四块正式评测决定。
 
+若有三个独立的 8×H100 allocation，推荐把三个 seed 并行提交以缩短墙钟时间：
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh finish-seed 0
+```
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh finish-seed 1
+```
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh finish-seed 2
+```
+
+每个任务只写自己的 `models/seedN`、正式评测目录和状态文件，三者可安全并行。
+每个 seed 的 selector 训练只使用本 allocation 的 GPU 0；四块正式评测使用全部 8 卡。
+三个任务全部 PASS 后，在本地任意实例运行 CPU-only 汇总：
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh summarize
+```
+
+三个 seed 并行时总计算量不变，预计墙钟接近单个 seed 的训练加四块评测；不要同时再启动
+旧的 `finish`，否则会争用相同的 immutable seed 输出目录。
+
 ## 6. 本阶段明确不做的内容
 
 - 不加载 rare-tuned/V3 checkpoint 继续训练。
