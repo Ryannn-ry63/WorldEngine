@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeo pipefail
 
-MODE="${1:?usage: $0 collect-lane LANE | collect-wait LANE | finish}"
+MODE="${1:?usage: $0 collect-lane LANE | collect-wait LANE | finish | finalize}"
 WORLDENGINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${WORLDENGINE_ROOT}/projects/AlgEngine/scripts/diffusiondrive"
 
@@ -72,8 +72,19 @@ case "${MODE}" in
         export DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=8
         exec "${SCRIPT_DIR}/run_grpo_selector_v3_rare_rollout_finish_h100.sh"
         ;;
+    finalize)
+        if [[ "${#}" -ne 1 ]]; then
+            echo "finalize takes no additional arguments" >&2
+            exit 2
+        fi
+        # Fail closed: training/evaluation starts only after all three formal
+        # collection audits pass and the filtered 50/50 mixture is materialized.
+        "${WORLDENGINE_ROOT}/run_diffusiondrive_grpo_selector_v3_rare_rollout_prepare_local.sh"
+        export DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=8
+        exec "${SCRIPT_DIR}/run_grpo_selector_v3_rare_rollout_finish_h100.sh"
+        ;;
     *)
-        echo "usage: $0 collect-lane LANE | collect-wait LANE | finish" >&2
+        echo "usage: $0 collect-lane LANE | collect-wait LANE | finish | finalize" >&2
         exit 2
         ;;
 esac

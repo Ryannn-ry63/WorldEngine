@@ -243,6 +243,16 @@ experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/data/
 
 ### Step E：一个 8×H100 任务完成训练与全部评测
 
+若希望把 Step D 的 CPU 聚合和 Step E 合并成一次提交，三个 collection
+lane 全部 PASS 后直接运行：
+
+```bash
+./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh finalize
+```
+
+`finalize` 会先执行 Step D；聚合、过滤或审计失败时会立即退出，不会进入训练。
+下面的 `finish` 命令只用于已经单独完成 Step D 的情况。
+
 ```bash
 ./run_diffusiondrive_grpo_selector_v3_rare_rollout_8h100.sh finish
 ```
