@@ -22,6 +22,10 @@ RARE_FILTER="${RARE_ROOT}/rare_tokens.yaml"
 RARE_PAIRS="${RARE_ROOT}/pairs.jsonl"
 RARE_AUDIT="${RARE_ROOT}/rare_data_audit.json"
 ASSET_ROOT="${WORLDENGINE_ROOT}/data/sim_engine/assets/navtrain"
+NUPLAN_ROOT="${WORLDENGINE_ROOT}/data/raw/nuplan/dataset/nuplan-v1.1"
+NUPLAN_DB_ROOT="${NUPLAN_ROOT}/splits/all_sensor"
+NUPLAN_MAP_ROOT="${WORLDENGINE_ROOT}/data/raw/nuplan/dataset/maps"
+OPENSCENE_ROOT="${WORLDENGINE_ROOT}/data/raw/openscene-v1.1"
 OUTPUT_AUDIT="${SCENARIO_ROOT}/rare_rollout_scenario_audit.json"
 LOG_DIR="${SOURCE_ROOT}/logs"
 mkdir -p "${LOG_DIR}"
@@ -37,6 +41,9 @@ done
     echo "Missing full-navtrain DigitalTwin assets: ${ASSET_ROOT}" >&2
     exit 1
 }
+for path in "${NUPLAN_ROOT}" "${NUPLAN_DB_ROOT}" "${NUPLAN_MAP_ROOT}" "${OPENSCENE_ROOT}"; do
+    [[ -e "${path}" ]] || { echo "Missing conversion data root: ${path}" >&2; exit 1; }
+done
 [[ -x "${ALGENGINE_PYTHON}" ]] || { echo "Missing AlgEngine Python" >&2; exit 1; }
 [[ -x "${SIMENGINE_PYTHON}" ]] || { echo "Missing SimEngine Python" >&2; exit 1; }
 
@@ -64,8 +71,12 @@ cd "${SIMENGINE_ROOT}"
 "${SIMENGINE_PYTHON}" "${CONVERTER}" \
     --digitaltwin-asset-root "${ASSET_ROOT}" \
     --navsim-filters "${RARE_FILTER}" \
+    --nuplan-root-path "${NUPLAN_ROOT}" \
+    --nuplan-db-path "${NUPLAN_DB_ROOT}" \
+    --nuplan-map-root "${NUPLAN_MAP_ROOT}" \
+    --openscene-dataroot "${OPENSCENE_ROOT}" \
     --out-dir "${SCENARIO_ROOT}" \
-    --num-processes "${DIFFUSIONDRIVE_RARE_ROLLOUT_CONVERTER_PROCESSES:-32}" \
+    --num-processes "${DIFFUSIONDRIVE_RARE_ROLLOUT_CONVERTER_PROCESSES:-1}" \
     --num-splits 3 \
     --shards-only \
     --resume-chunks \

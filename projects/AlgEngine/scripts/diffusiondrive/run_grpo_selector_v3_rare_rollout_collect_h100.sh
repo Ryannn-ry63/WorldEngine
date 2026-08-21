@@ -34,6 +34,7 @@ export WORLDENGINE_DIFFUSIONDRIVE_GSPLAT_BOOTSTRAP=1
 export WORLDENGINE_GSPLAT_EXTENSION="${WORLDENGINE_ROOT}/artifacts/toolchains/gsplat_sm89_sm90_v1/gsplat/csrc.so"
 export PYTHONPATH="${DIFFUSIONDRIVE_BOOTSTRAP}:${H100_SUPPORT_DIR}:${ALGENGINE_ROOT}:${SIMENGINE_ROOT}:${DIFFUSIONDRIVE_ROOT}:${PYTHONPATH:-}"
 export DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE="diffusiondrive_v3_rare_rollout_v1"
+EXPECTED_CUDA_CAPABILITY="${DIFFUSIONDRIVE_EXPECTED_CUDA_CAPABILITY:-sm_90}"
 
 BASELINE="${DIFFUSIONDRIVE_GRPO_BASELINE}"
 BASELINE_SHA256="1c450bad0cf62ab9110a8101d2ff6c96984541bd975ddea598ddb2add086a514"
@@ -99,9 +100,11 @@ fi
 
 CURRENT_STAGE=cuda_preflight
 "${ALGENGINE_PYTHON}" "${H100_SUPPORT_DIR}/preflight_mmcv_cuda.py" \
-    --extension "${WORLDENGINE_MMCV_EXTENSION}" --expected-capability sm_90 --all-visible
+    --extension "${WORLDENGINE_MMCV_EXTENSION}" \
+    --expected-capability "${EXPECTED_CUDA_CAPABILITY}" --all-visible
 "${SIMENGINE_PYTHON}" "${H100_SUPPORT_DIR}/preflight_gsplat_cuda.py" \
-    --extension "${WORLDENGINE_GSPLAT_EXTENSION}" --expected-capability sm_90 \
+    --extension "${WORLDENGINE_GSPLAT_EXTENSION}" \
+    --expected-capability "${EXPECTED_CUDA_CAPABILITY}" \
     --ray-workers "${ROLLOUT_GPU_COUNT}"
 "${ALGENGINE_PYTHON}" -c "from mmcv import Config; c=Config.fromfile('${CONFIG}'); assert c.selector_rollout_contract.source_policy=='immutable_epoch100_diffusiondrive'; assert not c.selector_rollout_contract.trained_v3_checkpoint_loaded; assert c.model.planning_head.export_rollout_context"
 

@@ -16,6 +16,11 @@ def parse_args():
         choices=("feature_only", "feature_geometry", "feature_geometry_route", "full"),
         default="full",
     )
+    parser.add_argument(
+        "--expected-capability",
+        default="sm_90",
+        help="Expected CUDA capability (for example sm_89 or sm_90).",
+    )
     return parser.parse_args()
 
 
@@ -24,8 +29,11 @@ def main():
     if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
         raise RuntimeError("V3 optimizer preflight requires one visible CUDA device")
     capability = torch.cuda.get_device_capability(0)
-    if capability != (9, 0):
-        raise RuntimeError(f"expected H100 sm90, found sm{capability[0]}{capability[1]}")
+    actual_capability = f"sm_{capability[0]}{capability[1]}"
+    if actual_capability != args.expected_capability:
+        raise RuntimeError(
+            f"expected {args.expected_capability}, found {actual_capability}"
+        )
 
     torch.manual_seed(20260812)
     device = torch.device("cuda")
@@ -106,7 +114,7 @@ def main():
                 "status": "PASS",
                 "ablation": args.ablation,
                 "device": torch.cuda.get_device_name(0),
-                "capability": "sm90",
+                "capability": actual_capability,
                 "torch": torch.__version__,
                 "cuda": torch.version.cuda,
                 "loss": float(loss.detach()),

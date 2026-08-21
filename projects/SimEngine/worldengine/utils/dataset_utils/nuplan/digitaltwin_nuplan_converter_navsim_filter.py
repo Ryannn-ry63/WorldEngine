@@ -464,16 +464,29 @@ if __name__ == "__main__":
     chunks_dir = os.path.join(out_dir, "chunks")
     os.makedirs(chunks_dir, exist_ok=True)
 
-    # Process with multiprocessing - workers save directly to disk
+    # Process scenes and save directly to disk.  nuPlan/SQLAlchemy/map objects can
+    # deadlock after fork on some hosts, so num_processes=1 must be a genuinely
+    # serial path rather than a one-worker multiprocessing.Pool.
     all_scenario_names = []
-    with Pool(processes=args.num_processes) as pool:
-        # Use tqdm to show progress
-        for scenario_names in tqdm(
-            pool.imap_unordered(partial(create_digitaltwin_info_central, args=args), filtered_video_scenes),
+    if args.num_processes == 1:
+        for video_scene in tqdm(
+            filtered_video_scenes,
             total=len(filtered_video_scenes),
-            desc="Processing Video Scenes"
+            desc="Processing Video Scenes (serial)",
         ):
+            scenario_names = create_digitaltwin_info_central(video_scene, args=args)
             all_scenario_names.extend(scenario_names)
+    else:
+        with Pool(processes=args.num_processes) as pool:
+            for scenario_names in tqdm(
+                pool.imap_unordered(
+                    partial(create_digitaltwin_info_central, args=args),
+                    filtered_video_scenes,
+                ),
+                total=len(filtered_video_scenes),
+                desc="Processing Video Scenes",
+            ):
+                all_scenario_names.extend(scenario_names)
 
     all_scenario_names = sorted(all_scenario_names)
     print(f"\nTotal scenarios processed: {len(all_scenario_names)}")

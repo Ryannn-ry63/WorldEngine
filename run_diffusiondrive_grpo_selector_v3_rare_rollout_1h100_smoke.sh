@@ -8,6 +8,7 @@ ALGENGINE_ROOT="${WORLDENGINE_ROOT}/projects/AlgEngine"
 SCRIPT_DIR="${ALGENGINE_ROOT}/scripts/diffusiondrive"
 export DIFFUSIONDRIVE_EXPECTED_GPU_COUNT=1
 export DIFFUSIONDRIVE_ROLLOUT_GPU_COUNT=1
+EXPECTED_CUDA_CAPABILITY="${DIFFUSIONDRIVE_EXPECTED_CUDA_CAPABILITY:-sm_90}"
 
 ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1"
 SMOKE_ROOT="${ROOT}/local_smoke/smoke_$(date -u +%Y%m%dT%H%M%SZ)"
@@ -49,7 +50,8 @@ CURRENT_STAGE=build_smoke_mixture
 
 CURRENT_STAGE=optimizer_preflight
 CUDA_VISIBLE_DEVICES=0 CUDA_LAUNCH_BLOCKING=1 "${ALGENGINE_PYTHON}" \
-    "${SCRIPT_DIR}/preflight_grpo_selector_v3_h100_optimizer.py" --ablation full
+    "${SCRIPT_DIR}/preflight_grpo_selector_v3_h100_optimizer.py" --ablation full \
+    --expected-capability "${EXPECTED_CUDA_CAPABILITY}"
 
 CURRENT_STAGE=train_fresh_selector
 CUDA_VISIBLE_DEVICES=0 "${ALGENGINE_PYTHON}" \
