@@ -72,6 +72,8 @@ def audit_scenarios(
     asset_config_root: Path,
     expected_lanes: int,
     expected_scenarios: int,
+    expected_imputed_scenarios: int,
+    expected_imputed_frames: int,
 ) -> dict:
     converter = load_json(converter_manifest)
     rare = load_json(rare_audit)
@@ -107,6 +109,9 @@ def audit_scenarios(
 
     seen_scenarios: set[str] = set()
     seen_tokens: set[str] = set()
+    imputed_scenario_tokens: set[str] = set()
+    imputed_frame_count = 0
+    imputation_method = "nearest_available_sampled_frame_tie_earlier_v1"
     lane_rows = []
     shards = converter.get("shards", [])
     if len(shards) != expected_lanes:
@@ -135,6 +140,58 @@ def audit_scenarios(
                 raise RuntimeError(f"non-rare scenario entered rollout: {scenario_id}")
             if token in seen_tokens:
                 raise RuntimeError(f"rare token produced multiple scenarios: {token}")
+
+            metadata = scenario.get("metadata")
+            if not isinstance(metadata, dict):
+                raise RuntimeError(f"scenario metadata is not a dictionary: {scenario_id}")
+            imputations = metadata.get("openscene_context_imputations", [])
+            if not isinstance(imputations, list):
+                raise RuntimeError(
+                    f"OpenScene context imputations are not a list: {scenario_id}"
+                )
+            if imputations:
+                if metadata.get("openscene_context_imputation_method") != imputation_method:
+                    raise RuntimeError(
+                        f"unexpected OpenScene context imputation method: {scenario_id}"
+                    )
+                lidar_tokens = [
+                    str(value)
+                    for value in metadata.get("nuplan_lidar_pc_tokens", [])
+                ]
+                openscene_infos = metadata.get("openscene_data_infos_dict", {})
+                if not lidar_tokens or not isinstance(openscene_infos, dict):
+                    raise RuntimeError(
+                        f"imputed scenario has incomplete OpenScene metadata: {scenario_id}"
+                    )
+                if not all(isinstance(value, dict) for value in imputations):
+                    raise RuntimeError(
+                        f"invalid OpenScene context imputation row: {scenario_id}"
+                    )
+                targets = {str(value.get("target_token")) for value in imputations}
+                for value in imputations:
+                    target = str(value.get("target_token"))
+                    source = str(value.get("source_token"))
+                    offset = value.get("sample_offset")
+                    if (
+                        target == token
+                        or target == source
+                        or target not in lidar_tokens
+                        or source not in lidar_tokens
+                        or source in targets
+                        or target not in openscene_infos
+                        or source not in openscene_infos
+                        or not isinstance(offset, int)
+                        or offset == 0
+                    ):
+                        raise RuntimeError(
+                            f"invalid OpenScene context imputation contract: {scenario_id}"
+                        )
+                    if str(openscene_infos[target].get("token")) != target:
+                        raise RuntimeError(
+                            f"imputed OpenScene frame token drifted: {scenario_id}"
+                        )
+                imputed_scenario_tokens.add(token)
+                imputed_frame_count += len(imputations)
             seen_scenarios.add(scenario_id)
             seen_tokens.add(token)
             lane_tokens.append(token)
@@ -155,6 +212,17 @@ def audit_scenarios(
             "scenario shards do not exactly cover rare tokens: "
             f"missing={len(expected - seen_tokens)} extra={len(seen_tokens - expected)}"
         )
+    if len(imputed_scenario_tokens) != expected_imputed_scenarios:
+        raise RuntimeError(
+            "OpenScene context imputed-scenario count drifted: "
+            f"expected={expected_imputed_scenarios} "
+            f"observed={len(imputed_scenario_tokens)}"
+        )
+    if imputed_frame_count != expected_imputed_frames:
+        raise RuntimeError(
+            "OpenScene context imputed-frame count drifted: "
+            f"expected={expected_imputed_frames} observed={imputed_frame_count}"
+        )
     return {
         "schema_version": 1,
         "status": "PASS",
@@ -163,6 +231,9 @@ def audit_scenarios(
         "num_scenarios": len(seen_scenarios),
         "num_origin_rare_tokens": len(seen_tokens),
         "num_lanes": expected_lanes,
+        "openscene_context_imputation_method": imputation_method,
+        "openscene_context_imputed_scenarios": len(imputed_scenario_tokens),
+        "openscene_context_imputed_frames": imputed_frame_count,
         "converter_manifest": str(converter_manifest),
         "converter_manifest_sha256": sha256_file(converter_manifest),
         "rare_pairs": str(rare_pairs),
@@ -186,6 +257,8 @@ def main() -> None:
     parser.add_argument("--asset-config-root", type=Path, required=True)
     parser.add_argument("--expected-lanes", type=int, default=3)
     parser.add_argument("--expected-scenarios", type=int, default=6271)
+    parser.add_argument("--expected-imputed-scenarios", type=int, default=82)
+    parser.add_argument("--expected-imputed-frames", type=int, default=84)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     paths = {
@@ -209,6 +282,8 @@ def main() -> None:
         paths["asset_config_root"],
         args.expected_lanes,
         args.expected_scenarios,
+        args.expected_imputed_scenarios,
+        args.expected_imputed_frames,
     )
     output = args.output.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

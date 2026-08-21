@@ -11,6 +11,7 @@ python worldengine/utils/dataset_utils/nuplan/digitaltwin_nuplan_converter_navsi
 """
 
 import argparse
+import copy
 import hashlib
 import json
 import numpy as np
@@ -37,7 +38,12 @@ from worldengine.utils.dataset_utils.nuplan.nuplan_utils import (
 from worldengine.utils.dataset_utils.nuplan.digitaltwin_config import load_config, VideoScene
 
 
-def read_openscene_data_infos(openscene_dataroot, log_name, lidar_pc_tokens):
+def read_openscene_data_infos(
+    openscene_dataroot,
+    log_name,
+    lidar_pc_tokens,
+    required_token=None,
+):
     openscene_data_infos = os.path.join(openscene_dataroot, 'meta_datas', 'trainval', f"{log_name}.pkl")
     if not os.path.exists(openscene_data_infos):
         openscene_data_infos = os.path.join(openscene_dataroot, 'meta_datas', 'test', f"{log_name}.pkl")
@@ -47,8 +53,46 @@ def read_openscene_data_infos(openscene_dataroot, log_name, lidar_pc_tokens):
     )
     openscene_data_infos = pickle.load(open(openscene_data_infos, 'rb'))
     openscene_data_dict = {frame['token']: frame for frame in openscene_data_infos}
-    openscene_data_dict = {token: openscene_data_dict[token] for token in lidar_pc_tokens}
-    return openscene_data_dict
+    if required_token is not None and required_token not in openscene_data_dict:
+        raise KeyError(
+            f'required central token {required_token} is absent from OpenScene '
+            f'log {log_name}'
+        )
+    available_positions = [
+        index
+        for index, token in enumerate(lidar_pc_tokens)
+        if token in openscene_data_dict
+    ]
+    if not available_positions:
+        raise KeyError(f'no requested lidar frames exist in OpenScene log {log_name}')
+
+    selected = {}
+    imputations = []
+    for index, token in enumerate(lidar_pc_tokens):
+        if token in openscene_data_dict:
+            selected[token] = openscene_data_dict[token]
+            continue
+        # Missing OpenScene context frames are rare (the rollout audit observed
+        # at most two in a 24-frame window).  Preserve the requested timeline
+        # and schema by cloning the nearest available sampled context frame;
+        # ties deterministically prefer the earlier frame.  The central rare
+        # token is separately required to be present by the caller.
+        source_index = min(
+            available_positions,
+            key=lambda candidate: (abs(candidate - index), candidate),
+        )
+        source_token = lidar_pc_tokens[source_index]
+        frame = copy.deepcopy(openscene_data_dict[source_token])
+        frame['token'] = token
+        selected[token] = frame
+        imputations.append(
+            {
+                'target_token': token,
+                'source_token': source_token,
+                'sample_offset': source_index - index,
+            }
+        )
+    return selected, imputations
 
 def create_scenario_description(
     args,
@@ -70,6 +114,14 @@ def create_scenario_description(
 
     log_length = len(lidar_pcs)
 
+    central_token = video_name.rsplit('-', 1)[-1]
+    openscene_data_infos, openscene_imputations = read_openscene_data_infos(
+        openscene_dataroot,
+        video_info['log_name'],
+        lidar_pc_tokens,
+        required_token=central_token,
+    )
+
     info_dict = dict(
         id=video_name,
         name=video_name,
@@ -81,7 +133,11 @@ def create_scenario_description(
         base_timestamp=lidar_pcs[0].timestamp,
         metadata=dict(
             nuplan_lidar_pc_tokens=lidar_pc_tokens,
-            openscene_data_infos_dict=read_openscene_data_infos(openscene_dataroot, video_info['log_name'], lidar_pc_tokens),
+            openscene_data_infos_dict=openscene_data_infos,
+            openscene_context_imputations=openscene_imputations,
+            openscene_context_imputation_method=(
+                'nearest_available_sampled_frame_tie_earlier_v1'
+            ),
             digitaltwin_asset_id=digitaltwin_config.road_block_name,
         )
     )
@@ -313,6 +369,28 @@ def parse_args():
         action='store_true',
         help='Reuse already complete per-scenario chunks after validating them.',
     )
+    parser.add_argument(
+        '--worker-count',
+        type=int,
+        default=1,
+        help='Number of independent serial workers partitioning filtered video scenes.',
+    )
+    parser.add_argument(
+        '--worker-index',
+        type=int,
+        default=0,
+        help='Zero-based independent serial worker index.',
+    )
+    parser.add_argument(
+        '--chunks-only',
+        action='store_true',
+        help='Only populate resumable chunks; do not materialize final scenario shards.',
+    )
+    parser.add_argument(
+        '--materialize-only',
+        action='store_true',
+        help='Build final scenario shards from existing chunks without converting scenes.',
+    )
 
     args = parser.parse_args()
     return args
@@ -421,8 +499,36 @@ if __name__ == "__main__":
         raise ValueError('--num-splits must be positive')
     if args.expected_scenarios is not None and args.expected_scenarios < 1:
         raise ValueError('--expected-scenarios must be positive')
+    if args.worker_count < 1:
+        raise ValueError('--worker-count must be positive')
+    if not 0 <= args.worker_index < args.worker_count:
+        raise ValueError('--worker-index must be in [0, worker-count)')
+    if args.chunks_only and args.materialize_only:
+        raise ValueError('--chunks-only and --materialize-only are mutually exclusive')
 
     out_dir = args.out_dir
+    chunks_dir = os.path.join(out_dir, "chunks")
+    os.makedirs(chunks_dir, exist_ok=True)
+
+    if args.materialize_only:
+        scenario_names = sorted(path.stem for path in Path(chunks_dir).glob('*.pkl'))
+        if (
+            args.expected_scenarios is not None
+            and len(scenario_names) != args.expected_scenarios
+        ):
+            raise RuntimeError(
+                f'found {len(scenario_names)} scenario chunks; '
+                f'expected {args.expected_scenarios}'
+            )
+        manifest = write_scenario_outputs(
+            args.out_dir,
+            chunks_dir,
+            scenario_names,
+            args.num_splits,
+            shards_only=args.shards_only,
+        )
+        print(json.dumps(manifest, sort_keys=True))
+        raise SystemExit(0)
 
     if isinstance(args.navsim_filters, str):
         navsim_filters = [args.navsim_filters]
@@ -437,32 +543,36 @@ if __name__ == "__main__":
     selected_tokens = set(selected_tokens)
 
     configs = Path(args.digitaltwin_asset_root) / "configs"
-    configs = list(configs.glob("*.yaml"))
+    configs = sorted(configs.glob("*.yaml"))
 
     filtered_video_scenes = []
+    total_filtered_video_scenes = 0
     for config_path in configs:
         config = load_config(config_path.as_posix())
         config.central_tokens = [token for token in config.central_tokens if token in selected_tokens]
         if len(config.central_tokens) == 0:
             continue
-        else:
-            video_scene = VideoScene(config)
-            video_scene.load_pickle(f"{args.digitaltwin_asset_root}/assets/{video_scene.name}/video_scene_dict.pkl")
-            filtered_video_scenes.append(video_scene)
+        filtered_index = total_filtered_video_scenes
+        total_filtered_video_scenes += 1
+        if filtered_index % args.worker_count != args.worker_index:
+            continue
+        video_scene = VideoScene(config)
+        video_scene.load_pickle(f"{args.digitaltwin_asset_root}/assets/{video_scene.name}/video_scene_dict.pkl")
+        filtered_video_scenes.append(video_scene)
 
     print("Total tokens in navsim filters:", len(selected_tokens))
     print("Total video scenes:", len(configs))
-    print("Total filtered video scenes:", len(filtered_video_scenes))
+    print("Total filtered video scenes:", total_filtered_video_scenes)
+    print(
+        f"Worker video scenes: {len(filtered_video_scenes)} "
+        f"(worker {args.worker_index}/{args.worker_count})"
+    )
 
     # DEBUG: single process
     # all_scenarios = {}
     # for video_scene in filtered_video_scenes:
     #     scenario_names = create_digitaltwin_info_central(video_scene, args)
     #     print(f"Processed {len(scenario_names)} scenarios")
-
-    # Create chunks directory
-    chunks_dir = os.path.join(out_dir, "chunks")
-    os.makedirs(chunks_dir, exist_ok=True)
 
     # Process scenes and save directly to disk.  nuPlan/SQLAlchemy/map objects can
     # deadlock after fork on some hosts, so num_processes=1 must be a genuinely
@@ -490,6 +600,12 @@ if __name__ == "__main__":
 
     all_scenario_names = sorted(all_scenario_names)
     print(f"\nTotal scenarios processed: {len(all_scenario_names)}")
+    if args.chunks_only:
+        print(
+            f"Completed chunk worker {args.worker_index}/{args.worker_count}: "
+            f"{len(all_scenario_names)} scenarios"
+        )
+        raise SystemExit(0)
     if (
         args.expected_scenarios is not None
         and len(all_scenario_names) != args.expected_scenarios

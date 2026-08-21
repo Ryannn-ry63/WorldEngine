@@ -56,6 +56,7 @@ if [[ -f "${OUTPUT_AUDIT}" ]]; then
         --rare-filter "${RARE_FILTER}" \
         --asset-config-root "${ASSET_ROOT}/configs" \
         --expected-lanes 3 --expected-scenarios 6271 \
+        --expected-imputed-scenarios 82 --expected-imputed-frames 84 \
         --output "${OUTPUT_AUDIT}"; then
         trap - ERR
         echo "SKIP verified rare-rollout scenario preparation"
@@ -68,19 +69,66 @@ fi
 CURRENT_STAGE=convert_rare_scenarios
 mkdir -p "${SCENARIO_ROOT}"
 cd "${SIMENGINE_ROOT}"
-"${SIMENGINE_PYTHON}" "${CONVERTER}" \
-    --digitaltwin-asset-root "${ASSET_ROOT}" \
-    --navsim-filters "${RARE_FILTER}" \
-    --nuplan-root-path "${NUPLAN_ROOT}" \
-    --nuplan-db-path "${NUPLAN_DB_ROOT}" \
-    --nuplan-map-root "${NUPLAN_MAP_ROOT}" \
-    --openscene-dataroot "${OPENSCENE_ROOT}" \
-    --out-dir "${SCENARIO_ROOT}" \
-    --num-processes "${DIFFUSIONDRIVE_RARE_ROLLOUT_CONVERTER_PROCESSES:-1}" \
-    --num-splits 3 \
-    --shards-only \
-    --resume-chunks \
+WORKER_COUNT="${DIFFUSIONDRIVE_RARE_ROLLOUT_CONVERTER_WORKERS:-4}"
+[[ "${WORKER_COUNT}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Invalid converter worker count: ${WORKER_COUNT}" >&2
+    exit 1
+}
+
+converter_common=(
+    --digitaltwin-asset-root "${ASSET_ROOT}"
+    --navsim-filters "${RARE_FILTER}"
+    --nuplan-root-path "${NUPLAN_ROOT}"
+    --nuplan-db-path "${NUPLAN_DB_ROOT}"
+    --nuplan-map-root "${NUPLAN_MAP_ROOT}"
+    --openscene-dataroot "${OPENSCENE_ROOT}"
+    --out-dir "${SCENARIO_ROOT}"
+    --num-processes 1
+    --num-splits 3
+    --shards-only
+    --resume-chunks
     --expected-scenarios 6271
+)
+
+worker_pids=()
+worker_logs=()
+for ((worker_index = 0; worker_index < WORKER_COUNT; worker_index++)); do
+    worker_log="${LOG_DIR}/prepare_worker${worker_index}_of_${WORKER_COUNT}_$(date -u +%Y%m%dT%H%M%SZ).log"
+    worker_logs+=("${worker_log}")
+    echo "Starting independent serial converter worker ${worker_index}/${WORKER_COUNT}"
+    "${SIMENGINE_PYTHON}" "${CONVERTER}" "${converter_common[@]}" \
+        --worker-count "${WORKER_COUNT}" --worker-index "${worker_index}" \
+        --chunks-only >"${worker_log}" 2>&1 &
+    worker_pids+=("$!")
+done
+
+active_pids=("${worker_pids[@]}")
+while ((${#active_pids[@]})); do
+    finished_pid=""
+    if wait -n -p finished_pid "${active_pids[@]}"; then
+        :
+    else
+        rc=$?
+        echo "A scenario converter worker failed; stopping remaining workers" >&2
+        for pid in "${active_pids[@]}"; do
+            kill -TERM "${pid}" 2>/dev/null || true
+        done
+        wait "${active_pids[@]}" 2>/dev/null || true
+        for worker_log in "${worker_logs[@]}"; do
+            echo "worker_log: ${worker_log}" >&2
+        done
+        exit "${rc}"
+    fi
+    next_active=()
+    for pid in "${active_pids[@]}"; do
+        [[ "${pid}" == "${finished_pid}" ]] || next_active+=("${pid}")
+    done
+    active_pids=("${next_active[@]}")
+    echo "Completed independent converter worker pid=${finished_pid}; remaining=${#active_pids[@]}"
+done
+
+CURRENT_STAGE=materialize_scenario_shards
+"${SIMENGINE_PYTHON}" "${CONVERTER}" "${converter_common[@]}" --materialize-only
 
 CURRENT_STAGE=audit_scenario_lanes
 "${ALGENGINE_PYTHON}" "${AUDITOR}" \
@@ -90,6 +138,7 @@ CURRENT_STAGE=audit_scenario_lanes
     --rare-filter "${RARE_FILTER}" \
     --asset-config-root "${ASSET_ROOT}/configs" \
     --expected-lanes 3 --expected-scenarios 6271 \
+    --expected-imputed-scenarios 82 --expected-imputed-frames 84 \
     --output "${OUTPUT_AUDIT}"
 
 CURRENT_STAGE=complete
