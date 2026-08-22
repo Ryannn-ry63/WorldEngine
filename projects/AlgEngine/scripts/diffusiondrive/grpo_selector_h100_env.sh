@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Shared read-only senior-environment bootstrap for DiffusionDrive-only jobs.
 
+# The senior bashrc also exports WORLDENGINE_ROOT.  Preserve the root selected
+# by the launcher before sourcing it, then restore that root afterwards.
+_DIFFUSIONDRIVE_REQUESTED_WORLDENGINE_ROOT="${WORLDENGINE_ROOT:-/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine}"
 set +u
 PS1="${PS1:-diffusiondrive-h100}"
 . /inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/dotfiles/.bashrc
 set -u
 
-# Honor the code root selected by an isolated Git worktree.  Keep the
-# historical main-worktree path only as a fallback for legacy launchers.
-export WORLDENGINE_ROOT="${WORLDENGINE_ROOT:-/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine}"
+export WORLDENGINE_ROOT="${_DIFFUSIONDRIVE_REQUESTED_WORLDENGINE_ROOT}"
+unset _DIFFUSIONDRIVE_REQUESTED_WORLDENGINE_ROOT
 export SIMENGINE_ROOT="${WORLDENGINE_ROOT}/projects/SimEngine"
 export ALGENGINE_ROOT="${WORLDENGINE_ROOT}/projects/AlgEngine"
 export ALGENGINE_ENV="${DIFFUSIONDRIVE_ALGENGINE_ENV_OVERRIDE:-/inspire/hdd/global_user/wangcaojun-240208020180/miniconda3/envs/algengine}"
