@@ -140,7 +140,7 @@ def test_mixed_batch_is_exactly_source_aware():
             "paired_common_token": "common",
         },
     ]
-    inputs, reference, rewards, valid, kinds = trainer.mixed_batch(
+    inputs, reference, rewards, components, valid, kinds = trainer.mixed_batch(
         [("hard", 0), ("hard", 1), ("common", 0), ("common", 1)],
         rows,
         real,
@@ -151,6 +151,7 @@ def test_mixed_batch_is_exactly_source_aware():
     assert inputs["candidate_features"].shape[0] == 4
     assert sorted(reference[:, 0].tolist()) == [1.0, 2.0, 2.0, 3.0]
     assert rewards.shape == (4, 20)
+    assert components.shape == (4, 20, 6)
     assert valid.all()
     assert kinds == {
         "hard_real_rare": 1,

@@ -193,6 +193,83 @@ def exact_group_loss(logits, reference_logits, rewards, valid, temperature, kl_w
     return policy + kl_weight * kl, policy, kl
 
 
+def gate_conditioned_exact_group_loss(
+    logits,
+    reference_logits,
+    rewards,
+    components,
+    valid,
+    temperature,
+    kl_weight,
+):
+    """Optimize official PDM plus quality ranking conditioned on safety.
+
+    NAVSIM PDM uses no-collision and drivable-area compliance as
+    multiplicative gates.  A single group normalization over the final score
+    consequently devotes most of its dynamic range to safe-vs-unsafe
+    separation.  The conditional term below renormalizes the official
+    weighted quality metrics *only among gated-safe candidates*.  It changes
+    neither the official reward nor the probability mass assigned to the safe
+    set directly; it only supplies a relative ranking inside that set.
+    """
+    if components.ndim != 3 or components.shape[-1] != 6:
+        raise ValueError("candidate reward components must have shape [B, K, 6]")
+    if components.shape[:2] != rewards.shape or valid.shape != rewards.shape:
+        raise ValueError("gate-conditioned reward tensor shapes disagree")
+
+    finite_components = torch.isfinite(components).all(dim=-1)
+    valid = valid & torch.isfinite(rewards) & finite_components
+    current_masked = (logits / temperature).masked_fill(~valid, -1e4)
+    reference_masked = (reference_logits / temperature).masked_fill(~valid, -1e4)
+    current_logp = F.log_softmax(current_masked, dim=-1)
+    reference_logp = F.log_softmax(reference_masked, dim=-1)
+    probability = current_logp.exp()
+
+    official_advantage, official_active = normalized_advantage(rewards, valid)
+    zero = logits.sum() * 0.0
+    if official_active.any():
+        official_policy = -(
+            probability * official_advantage
+        ).sum(dim=-1)[official_active].mean()
+        kl = (
+            probability
+            * (current_logp - reference_logp)
+            * valid.to(logits.dtype)
+        ).sum(dim=-1)[official_active].mean()
+    else:
+        official_policy = zero
+        kl = zero
+
+    # Component order is NC, DAC, EP, TTC, comfort, DDC.  Only NC and DAC
+    # are multiplicative gates in the NAVSIM-v1 scorer.  DDC has zero weight
+    # in the frozen [5, 5, 2, 0] weighted-metric contract.
+    safe = valid & (components[..., 0] >= 1.0 - 1e-6) & (
+        components[..., 1] >= 1.0 - 1e-6
+    )
+    quality = (
+        5.0 * components[..., 2]
+        + 5.0 * components[..., 3]
+        + 2.0 * components[..., 4]
+    ) / 12.0
+    quality_advantage, quality_active = normalized_advantage(quality, safe)
+    if quality_active.any():
+        safe_logits = (logits / temperature).masked_fill(~safe, -1e4)
+        safe_probability = F.softmax(safe_logits, dim=-1)
+        quality_policy = -(
+            safe_probability * quality_advantage
+        ).sum(dim=-1)[quality_active].mean()
+    else:
+        quality_policy = zero
+
+    loss = official_policy + quality_policy + kl_weight * kl
+    diagnostics = {
+        "official_active": official_active,
+        "quality_active": quality_active,
+        "safe": safe,
+    }
+    return loss, official_policy, quality_policy, kl, diagnostics
+
+
 def selector_metrics(logits, reference_logits, rewards, components, valid, temperature):
     current_masked = (logits / temperature).masked_fill(~valid, -1e4)
     reference_masked = (reference_logits / temperature).masked_fill(~valid, -1e4)

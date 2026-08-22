@@ -24,6 +24,11 @@ from build_grpo_selector_v3_rare_rollout_data import (
 
 
 METHOD = "scene_conditioned_exact_group_grpo_v3_rare_rollout_v1"
+GATE_CONDITIONED_METHOD = (
+    "scene_conditioned_gate_conditioned_group_grpo_v3_rare_rollout_v1"
+)
+OBJECTIVE_OFFICIAL = "official_pdm"
+OBJECTIVE_GATE_CONDITIONED = "gate_conditioned_pdm"
 FORMAL_EPOCHS = 16
 FORMAL_EXAMPLES_PER_CACHE_EPOCH = 6339
 FORMAL_BATCH_SIZE = 64
@@ -173,8 +178,11 @@ def gather_source(cache: dict, indices: list[int], device: torch.device):
     rewards = cache["candidate_rewards"][tensor_indices].to(
         device=device, dtype=torch.float32
     )
+    components = cache["candidate_reward_components"][tensor_indices].to(
+        device=device, dtype=torch.float32
+    )
     valid = cache["candidate_reward_valid_mask"][tensor_indices].to(device=device)
-    return inputs, reference, rewards, valid
+    return inputs, reference, rewards, components, valid
 
 
 def mixed_batch(
@@ -213,11 +221,17 @@ def mixed_batch(
     }
     reference = torch.cat([batch[1] for batch in batches], dim=0)
     rewards = torch.cat([batch[2] for batch in batches], dim=0)
-    valid = torch.cat([batch[3] for batch in batches], dim=0)
-    return inputs, reference, rewards, valid, source_kinds
+    components = torch.cat([batch[3] for batch in batches], dim=0)
+    valid = torch.cat([batch[4] for batch in batches], dim=0)
+    return inputs, reference, rewards, components, valid, source_kinds
 
 
 def validate_formal_args(args) -> None:
+    expected_method = (
+        GATE_CONDITIONED_METHOD
+        if args.objective == OBJECTIVE_GATE_CONDITIONED
+        else METHOD
+    )
     expected = {
         "temperature": 1.0,
         "learning_rate": 1e-4,
@@ -225,7 +239,7 @@ def validate_formal_args(args) -> None:
         "epochs": FORMAL_EPOCHS,
         "examples_per_cache_epoch": FORMAL_EXAMPLES_PER_CACHE_EPOCH,
         "batch_size": FORMAL_BATCH_SIZE,
-        "method_name": METHOD,
+        "method_name": expected_method,
     }
     drift = {
         key: {"actual": getattr(args, key), "expected": value}
@@ -247,6 +261,7 @@ def save_selector_state(path, model, model_config, args, epoch, manifest_path, p
         },
         "scene_selector_config": model_config,
         "ablation": "full",
+        "objective": args.objective,
         "temperature": args.temperature,
         "learning_rate": args.learning_rate,
         "kl_weight": args.kl_weight,
@@ -262,8 +277,15 @@ def save_selector_state(path, model, model_config, args, epoch, manifest_path, p
 
 
 def train(args) -> dict:
+    args.objective = getattr(args, "objective", OBJECTIVE_OFFICIAL)
+    if args.objective not in (OBJECTIVE_OFFICIAL, OBJECTIVE_GATE_CONDITIONED):
+        raise ValueError(f"unsupported objective: {args.objective}")
     if args.method_name is None:
-        args.method_name = METHOD
+        args.method_name = (
+            GATE_CONDITIONED_METHOD
+            if args.objective == OBJECTIVE_GATE_CONDITIONED
+            else METHOD
+        )
     if args.formal_contract:
         validate_formal_args(args)
     if args.temperature <= 0 or args.learning_rate <= 0 or args.kl_weight < 0:
@@ -293,7 +315,28 @@ def train(args) -> dict:
         ]
         hard_rows = real_rows[: args.smoke_limit_hard_pool]
         if synthetic_rows and args.smoke_limit_hard_pool > 1:
-            hard_rows[-1] = synthetic_rows[0]
+            selected_synthetic = synthetic_rows[0]
+            if args.objective == OBJECTIVE_GATE_CONDITIONED:
+                for candidate_row in synthetic_rows:
+                    index = int(candidate_row["synthetic_index"])
+                    components = synthetic["candidate_reward_components"][index]
+                    valid = synthetic["candidate_reward_valid_mask"][index]
+                    safe = valid & (components[:, 0] >= 1.0 - 1e-6) & (
+                        components[:, 1] >= 1.0 - 1e-6
+                    )
+                    quality = (
+                        5.0 * components[:, 2]
+                        + 5.0 * components[:, 3]
+                        + 2.0 * components[:, 4]
+                    ) / 12.0
+                    if int(safe.sum()) >= 2 and float(quality[safe].std()) > 1e-6:
+                        selected_synthetic = candidate_row
+                        break
+                else:
+                    raise RuntimeError(
+                        "smoke pool has no synthetic gate-conditioned signal"
+                    )
+            hard_rows[-1] = selected_synthetic
     minimum_hard_draws = args.epochs * (args.examples_per_cache_epoch // 2)
     if len(hard_rows) > minimum_hard_draws:
         raise RuntimeError(
@@ -315,7 +358,7 @@ def train(args) -> dict:
     model, model_config = common.model_from_cache(real_caches[0], "full")
     model = model.to(device)
     with torch.no_grad():
-        initial_inputs, reference, _, _, _ = mixed_batch(
+        initial_inputs, reference, _, _, _, _ = mixed_batch(
             [("hard", 0)],
             hard_rows,
             real_caches[0],
@@ -374,7 +417,7 @@ def train(args) -> dict:
             selected = [selected[index] for index in permutation]
             for start in range(0, len(selected), args.batch_size):
                 batch_rows = selected[start : start + args.batch_size]
-                inputs, reference, rewards, valid, kinds = mixed_batch(
+                inputs, reference, rewards, components, valid, kinds = mixed_batch(
                     batch_rows,
                     hard_rows,
                     real_caches[cache_index],
@@ -384,14 +427,39 @@ def train(args) -> dict:
                 )
                 logits = reference + model(**inputs)
                 optimizer.zero_grad(set_to_none=True)
-                loss, policy, kl = common.exact_group_loss(
-                    logits,
-                    reference,
-                    rewards,
-                    valid,
-                    args.temperature,
-                    args.kl_weight,
-                )
+                if args.objective == OBJECTIVE_GATE_CONDITIONED:
+                    loss, policy, quality_policy, kl, diagnostics = (
+                        common.gate_conditioned_exact_group_loss(
+                            logits,
+                            reference,
+                            rewards,
+                            components,
+                            valid,
+                            args.temperature,
+                            args.kl_weight,
+                        )
+                    )
+                    accumulated["quality_policy"] += float(
+                        quality_policy.detach().cpu()
+                    )
+                    accumulated["official_active_groups"] += int(
+                        diagnostics["official_active"].sum().detach().cpu()
+                    )
+                    accumulated["quality_active_groups"] += int(
+                        diagnostics["quality_active"].sum().detach().cpu()
+                    )
+                    accumulated["safe_candidates"] += int(
+                        diagnostics["safe"].sum().detach().cpu()
+                    )
+                else:
+                    loss, policy, kl = common.exact_group_loss(
+                        logits,
+                        reference,
+                        rewards,
+                        valid,
+                        args.temperature,
+                        args.kl_weight,
+                    )
                 if not bool(torch.isfinite(loss)):
                     raise RuntimeError(f"non-finite rare-rollout loss at epoch {epoch}")
                 loss.backward()
@@ -469,6 +537,7 @@ def train(args) -> dict:
         "fresh_selector_initialization": "exact_zero",
         "initial_max_abs_delta": initial_max_abs_delta,
         "sampling_mode": "common_hard_balanced",
+        "objective": args.objective,
         "ablation": "full",
         "scene_selector_config": model_config,
         "implementation_files": implementation_provenance(),
@@ -498,7 +567,15 @@ def train(args) -> dict:
         },
         "mean_training_loss": accumulated["loss"] / optimizer_steps,
         "mean_training_policy": accumulated["policy"] / optimizer_steps,
+        "mean_training_quality_policy": (
+            accumulated["quality_policy"] / optimizer_steps
+        ),
         "mean_training_kl": accumulated["kl"] / optimizer_steps,
+        "gate_conditioned_diagnostics": {
+            "official_active_groups": accumulated["official_active_groups"],
+            "quality_active_groups": accumulated["quality_active_groups"],
+            "safe_candidates": accumulated["safe_candidates"],
+        },
         "checkpoints": checkpoint_reports,
     }
     report_path = output_dir / "report.json"
@@ -528,6 +605,11 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=FORMAL_BATCH_SIZE)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--method-name")
+    parser.add_argument(
+        "--objective",
+        choices=(OBJECTIVE_OFFICIAL, OBJECTIVE_GATE_CONDITIONED),
+        default=OBJECTIVE_OFFICIAL,
+    )
     parser.add_argument("--formal-contract", action="store_true")
     parser.add_argument("--smoke-limit-hard-pool", type=int)
     return parser.parse_args()
