@@ -109,6 +109,26 @@ def test_bwm_explicit_sidecar_prefix_precedes_legacy_ambiguous_names():
     assert "goal_conditional_copy_with_noise" in prefixes
 
 
+def test_bwm_launchers_export_isolated_worktree_root():
+    worldengine_root = SCRIPT_DIR.parents[3]
+    launchers = (
+        worldengine_root
+        / "run_diffusiondrive_grpo_selector_v3_rare_rollout_bwm_8h100.sh",
+        SCRIPT_DIR / "run_grpo_selector_v3_rare_rollout_bwm_collect_h100.sh",
+        SCRIPT_DIR / "run_grpo_selector_v3_rare_rollout_bwm_finish_h100.sh",
+    )
+    for launcher in launchers:
+        text = launcher.read_text()
+        assert "export WORLDENGINE_ROOT" in text
+        assert "DIFFUSIONDRIVE_WORLDENGINE_ROOT_OVERRIDE" in text
+
+    environment = (SCRIPT_DIR / "grpo_selector_h100_env.sh").read_text()
+    assert (
+        "${DIFFUSIONDRIVE_WORLDENGINE_ROOT_OVERRIDE:-${WORLDENGINE_ROOT:-"
+        in environment
+    )
+
+
 def test_sidecar_prefix_rejects_path_traversal():
     try:
         sidecar_contract.sidecar_prefixes(

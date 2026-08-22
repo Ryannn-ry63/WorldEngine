@@ -3,7 +3,7 @@
 
 # The senior bashrc also exports WORLDENGINE_ROOT.  Preserve the root selected
 # by the launcher before sourcing it, then restore that root afterwards.
-_DIFFUSIONDRIVE_REQUESTED_WORLDENGINE_ROOT="${WORLDENGINE_ROOT:-/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine}"
+_DIFFUSIONDRIVE_REQUESTED_WORLDENGINE_ROOT="${DIFFUSIONDRIVE_WORLDENGINE_ROOT_OVERRIDE:-${WORLDENGINE_ROOT:-/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine}}"
 set +u
 PS1="${PS1:-diffusiondrive-h100}"
 . /inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/dotfiles/.bashrc

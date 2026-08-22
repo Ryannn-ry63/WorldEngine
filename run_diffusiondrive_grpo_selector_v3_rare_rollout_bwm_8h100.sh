@@ -3,6 +3,8 @@ set -Eeo pipefail
 
 MODE="${1:?usage: $0 collect-lane LANE | collect-all | finish-seed SEED | finish-all}"
 WORLDENGINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export WORLDENGINE_ROOT
+export DIFFUSIONDRIVE_WORLDENGINE_ROOT_OVERRIDE="${WORLDENGINE_ROOT}"
 SCRIPT_DIR="${WORLDENGINE_ROOT}/projects/AlgEngine/scripts/diffusiondrive"
 
 case "${MODE}" in

@@ -5,6 +5,8 @@ set -Eeo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORLDENGINE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+export WORLDENGINE_ROOT
+export DIFFUSIONDRIVE_WORLDENGINE_ROOT_OVERRIDE="${WORLDENGINE_ROOT}"
 
 export DIFFUSIONDRIVE_RARE_ROLLOUT_METHOD="scene_conditioned_exact_group_grpo_v3_rare_rollout_bwm_v1"
 export DIFFUSIONDRIVE_RARE_ROLLOUT_DATA_METHOD="diffusiondrive_v3_rare_rollout_bwm_mixture_v1"
