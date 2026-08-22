@@ -74,6 +74,8 @@ def test_bwm_scenarios_are_disjoint_paired_and_deterministic(tmp_path):
     )
     assert first["status"] == second["status"] == "PASS"
     assert first["num_scenarios"] == 36
+    assert first["expected_records_per_scene"] == 8
+    assert {row["records_per_scene"] for row in first["lanes"]} == {8}
     assert first["pairing_counts"] == {
         "deterministic_same_log_common": 18,
         "direct_diffusiondrive_rare_pair": 18,

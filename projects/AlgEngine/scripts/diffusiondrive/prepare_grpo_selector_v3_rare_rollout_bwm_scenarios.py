@@ -14,7 +14,8 @@ from pathlib import Path
 import yaml
 
 
-METHOD = "diffusiondrive_v3_rare_rollout_bwm_scenario_contract_v2"
+METHOD = "diffusiondrive_v3_rare_rollout_bwm_scenario_contract_v3"
+RECORDS_PER_SCENE = 8
 EXPECTED_SOURCE_NAMES = (
     "bwm_collision",
     "bwm_low_ep",
@@ -219,12 +220,12 @@ def prepare(
                 "scenario_file": str(path.resolve()),
                 "scenario_file_sha256": sha256_file(path),
                 "num_scenarios": len(payload),
-                "records_per_scene": 9,
+                "records_per_scene": RECORDS_PER_SCENE,
             }
         )
 
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "PASS",
         "method": METHOD,
         "source_kind": "senior_published_bwm_worlds_replayed_by_diffusiondrive",
@@ -234,7 +235,7 @@ def prepare(
             set().union(*source_origin_tokens.values())
         ),
         "num_lanes": num_lanes,
-        "expected_records_per_scene": 9,
+        "expected_records_per_scene": RECORDS_PER_SCENE,
         "source_counts": dict(sorted(source_counts.items())),
         "source_origin_counts": {
             key: len(value) for key, value in sorted(source_origin_tokens.items())

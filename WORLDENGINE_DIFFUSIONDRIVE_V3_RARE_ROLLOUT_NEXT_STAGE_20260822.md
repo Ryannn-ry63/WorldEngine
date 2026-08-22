@@ -79,7 +79,7 @@ The local preparation audit currently fixes 147 BWM worlds from 22 origins:
 14 collision, 80 low-EP and 53 off-road. Of these, 76 use an existing direct
 DiffusionDrive rare/common pair and 71 use a deterministic common token from
 the same log. navtest token/log overlap is zero. The 147 worlds are divided
-into immutable lanes of 47, 44 and 56 scenarios, with 9 reward records expected
+into immutable lanes of 47, 44 and 56 scenarios, with 8 reward records expected
 per scenario.
 
 Prepare/check the scenario contract locally (CPU only):

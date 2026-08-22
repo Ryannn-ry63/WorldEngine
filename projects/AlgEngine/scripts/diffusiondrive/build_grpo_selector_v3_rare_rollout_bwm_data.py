@@ -22,6 +22,7 @@ from audit_grpo_selector_v3_rare_rollout_collection import (
 )
 from prepare_grpo_selector_v3_rare_rollout_bwm_scenarios import (
     METHOD as SCENARIO_METHOD,
+    RECORDS_PER_SCENE,
 )
 
 
@@ -43,7 +44,7 @@ def load_jsonl(path: Path) -> list[dict]:
 def load_scenario_contract(audit_path: Path) -> tuple[dict, dict[str, dict]]:
     audit = load_json(audit_path)
     if (
-        audit.get("schema_version") != 2
+        audit.get("schema_version") != 3
         or audit.get("method") != SCENARIO_METHOD
         or audit.get("num_lanes") != 3
     ):
@@ -234,13 +235,13 @@ def build_data(
         raise RuntimeError("BWM collection lanes used different noise namespaces")
     expected_workers = 8 if formal else 1
     if any(
-        int(row.get("records_per_scene", -1)) != 9
+        int(row.get("records_per_scene", -1)) != RECORDS_PER_SCENE
         or int(row.get("num_workers", -1)) != expected_workers
         for row in audits
     ):
         raise RuntimeError(
             "BWM collection record/worker contract drifted: "
-            f"records_per_scene=9 workers={expected_workers}"
+            f"records_per_scene={RECORDS_PER_SCENE} workers={expected_workers}"
         )
     expected_records = sum(int(row["num_records"]) for row in audits)
 
