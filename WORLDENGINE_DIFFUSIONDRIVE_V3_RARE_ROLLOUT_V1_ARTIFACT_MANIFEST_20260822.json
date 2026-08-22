@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "status": "PASS",
+  "method": "diffusiondrive_v3_rare_rollout_v1_formal_freeze",
+  "code_branch": "diffusiondrive-selector-grpo-v3-rare-rollout-v1",
+  "code_commit_before_documentation_freeze": "79c1084",
+  "baseline_checkpoint_sha256": "1c450bad0cf62ab9110a8101d2ff6c96984541bd975ddea598ddb2add086a514",
+  "artifact_root": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1",
+  "artifact_sizes": {
+    "data": "1.1G",
+    "models": "952M",
+    "formal": "11M"
+  },
+  "files": [
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/data/manifest.json", "sha256": "a48903e6e897887ec1cc788b40b73ffed2b7c222975ad20cecc950d3fa7a87b7"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/data/hard_pool.jsonl", "sha256": "f3353334bde3111b6b9958530e6c173ce37dc93c44fb4908568c704e32dd0f05"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/data/synthetic_cache.pt", "sha256": "7c4c42490ff7e99803ce32163c922cf332ee7a1cdf878f3340da7ab069de88a6"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/collection/formal/lane0/collection_audit.json", "sha256": "feccff12927e721b52f0ae71fd65436b60d62acb5003b0edf60d70880f4eda54"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/collection/formal/lane1/collection_audit.json", "sha256": "2ba780f1a93c86f1390b69de52d40f462dec542f0dfa7cd2effb4a0f3791673b"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/collection/formal/lane2/collection_audit.json", "sha256": "09521fc08e5f5ceb5ca0c75f4fbf79cea74efca6edc42b9829f068696e2825eb"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed0/checkpoint.pth", "sha256": "bb356557a64602f16866396c3493fae1c2ba07621c42879f2a811d1bc507166c"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed0/checkpoint_manifest.json", "sha256": "a7b53cb0c016889551c4909da77cfe1171a49e6fcb7a32ca7c189c3a84e32568"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed0/checkpoint_audit.json", "sha256": "9d76f25c69b246bdd0af2af93cc28bbaa12e7e7724ccf46588be95b12d3788e0"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed0/train/epoch_16_scene_selector.pt", "sha256": "4a5d1cae4e64b99ac187fe11113bf4020baaf4f5c0b0e7d1510af47ec9fd6362"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed0/train/report.json", "sha256": "13ca9592a2909d4bd27491e3313d4d85f27079464a696914c2f01390dfb3ac34"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed1/checkpoint.pth", "sha256": "8d10c2f5c6ed793c70c84e058cdb100a60ed6ee626b57fc7a37afe7b558a62da"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed1/checkpoint_manifest.json", "sha256": "83ebacf0104da3af689737457bab1b6532719a5bbd31c545023575b621e77e73"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed1/checkpoint_audit.json", "sha256": "50d4073ba1664db8f4c5f56fc1dc8410e4d8bdeba6853d4f1f35047f84cf6374"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed1/train/epoch_16_scene_selector.pt", "sha256": "aaa808abf487859b11c236c7c7ed21b0c4b362e802bee63423608cf97f0a6f19"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed1/train/report.json", "sha256": "2fbf08bed76011f20cb6922fdf3b736c0ec52e190f962993d8a925ec129d7548"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed2/checkpoint.pth", "sha256": "75a48f73ab35de1b60b835ce523b6c41f8828aa8c1a9ce23716d228d20e8a8ff"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed2/checkpoint_manifest.json", "sha256": "aa4a209e0d4b1b0015b0e9b315e6c6f61590d8f9aaa192d4a0dd5906fe2df664"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed2/checkpoint_audit.json", "sha256": "fc41abacaba7bade8121185ede313fb7919ae292e95dc2db7111bfbb52851a76"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed2/train/epoch_16_scene_selector.pt", "sha256": "7633b036624d43e0ecb82c7006b9bc06c2d0de7aacb309968646c7cb3562a4bc"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/models/seed2/train/report.json", "sha256": "02d1bca53c432e2b922827b1aba35f43c66bfbc57407979f8efb6fc91fdf9525"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s0/summary.json", "sha256": "e534b04442ea932788caf1864a65ebc5d7d47f51e0acaf5046d7af8037307690"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s1/summary.json", "sha256": "db067b39d8e8ec7a07166088e2640e3893ebcb041610ae5cd491b26b70849898"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/formal/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s2/summary.json", "sha256": "037c778c4c821103884fad84eb68ae65cbfdf22d0583bb7b692b9c7857086754"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/formal/rare_rollout_comparison.json", "sha256": "1eec0f290368c84f39e59aa417d5e4473db5a88a1bb7cf12d7cca7582c02fdeb"},
+    {"path": "experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1/formal/rare_rollout_comparison.md", "sha256": "9336c924d6233359828caace6efd309838f1a20977942a46c8edc19df5d736cb"}
+  ]
+}
