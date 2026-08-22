@@ -327,7 +327,13 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
             raise RuntimeError("non-finite dynamic candidate PDM reward")
         record = dict(sidecar)
         rollout_scene_id = str(self.current_scene.get("id"))
-        origin_token = rollout_scene_id.rsplit("-", 1)[-1]
+        metadata = self.current_scene.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        origin_token = str(
+            metadata.get("rollout_origin_token")
+            or rollout_scene_id.rsplit("-", 1)[-1]
+        )
         if not origin_token or origin_token == rollout_scene_id:
             raise RuntimeError(
                 f"cannot recover rare origin token from scene {rollout_scene_id}"
@@ -338,6 +344,9 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
             rollout_scene_id=rollout_scene_id,
             rollout_scene_token=str(self.current_scene.get("token")),
             rollout_origin_token=origin_token,
+            rollout_source_kind=metadata.get("rollout_source_kind"),
+            rollout_log_name=metadata.get("rollout_log_name"),
+            paired_common_token=metadata.get("paired_common_token"),
             worldengine_step=int(self.current_step),
             candidate_rewards=np.asarray(scores, dtype=np.float32),
             candidate_reward_components=np.asarray(components, dtype=np.float32),

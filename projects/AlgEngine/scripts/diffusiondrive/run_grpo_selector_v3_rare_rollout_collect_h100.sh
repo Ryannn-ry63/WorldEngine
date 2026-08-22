@@ -33,18 +33,19 @@ export H100_SUPPORT_DIR="${SIMENGINE_ROOT}/scripts/diffusiondrive"
 export WORLDENGINE_DIFFUSIONDRIVE_GSPLAT_BOOTSTRAP=1
 export WORLDENGINE_GSPLAT_EXTENSION="${WORLDENGINE_ROOT}/artifacts/toolchains/gsplat_sm89_sm90_v1/gsplat/csrc.so"
 export PYTHONPATH="${DIFFUSIONDRIVE_BOOTSTRAP}:${H100_SUPPORT_DIR}:${ALGENGINE_ROOT}:${SIMENGINE_ROOT}:${DIFFUSIONDRIVE_ROOT}:${PYTHONPATH:-}"
-export DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE="diffusiondrive_v3_rare_rollout_v1"
+export DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE="${DIFFUSIONDRIVE_RARE_ROLLOUT_NOISE_NAMESPACE:-diffusiondrive_v3_rare_rollout_v1}"
 EXPECTED_CUDA_CAPABILITY="${DIFFUSIONDRIVE_EXPECTED_CUDA_CAPABILITY:-sm_90}"
 
 BASELINE="${DIFFUSIONDRIVE_GRPO_BASELINE}"
 BASELINE_SHA256="1c450bad0cf62ab9110a8101d2ff6c96984541bd975ddea598ddb2add086a514"
 CONFIG="${DIFFUSIONDRIVE_GRPO_CONFIG}"
-SOURCE_ROOT="${WORLDENGINE_ROOT}/experiments/grpo_sources/diffusiondrive_selector_rare_rollout_v1"
+SOURCE_ROOT="${DIFFUSIONDRIVE_RARE_ROLLOUT_SOURCE_ROOT:-${WORLDENGINE_ROOT}/experiments/grpo_sources/diffusiondrive_selector_rare_rollout_v1}"
 SCENARIO_ROOT="${SOURCE_ROOT}/scenarios"
-SCENARIO_AUDIT="${SCENARIO_ROOT}/rare_rollout_scenario_audit.json"
+SCENARIO_AUDIT="${DIFFUSIONDRIVE_RARE_ROLLOUT_SCENARIO_AUDIT:-${SCENARIO_ROOT}/rare_rollout_scenario_audit.json}"
 SCENARIO_FILE="${SCENARIO_ROOT}/scenario_shard_0${LANE}_of_03.pkl"
 ASSET_ROOT="${WORLDENGINE_ROOT}/data/sim_engine/assets/navtrain/assets"
-ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1"
+ROOT="${DIFFUSIONDRIVE_RARE_ROLLOUT_COLLECTION_ROOT:-${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1}"
+EXPECTED_RECORDS_PER_SCENE="${DIFFUSIONDRIVE_RARE_ROLLOUT_RECORDS_PER_SCENE:-8}"
 ROLLOUT_ROOT="${ROOT}/collection/${RUN_KIND}/lane${LANE}"
 AUDITOR="${SCRIPT_DIR}/audit_grpo_selector_v3_rare_rollout_collection.py"
 LOG_DIR="${ROOT}/logs"
@@ -91,7 +92,9 @@ assert row["status"]=="PASS"
 assert row["layout"]=="merged"
 assert row["code_sha"]==sys.argv[2]
 assert row["scenario_file_sha256"]==sys.argv[3]
-' "${FINAL_AUDIT}" "${CODE_SHA}" "${SCENARIO_SHA}"
+assert row["candidate_noise_namespace"]==sys.argv[4]
+' "${FINAL_AUDIT}" "${CODE_SHA}" "${SCENARIO_SHA}" \
+        "${DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE}"
     trap - ERR
     echo "SKIP verified completed rare-rollout lane ${LANE}"
     echo "audit: ${FINAL_AUDIT}"
@@ -212,6 +215,7 @@ AUDIT_ARGS=(
     --layout split
     --expected-noise-namespace "${DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE}"
     --expected-code-sha "${CODE_SHA}"
+    --expected-records-per-scene "${EXPECTED_RECORDS_PER_SCENE}"
     --expected-workers "${ROLLOUT_GPU_COUNT}"
     --output "${ROLLOUT_ROOT}/premerge_collection_audit.json"
 )
@@ -236,6 +240,7 @@ fi
     --layout merged \
     --expected-noise-namespace "${DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE}" \
     --expected-code-sha "${CODE_SHA}" \
+    --expected-records-per-scene "${EXPECTED_RECORDS_PER_SCENE}" \
     --expected-workers "${ROLLOUT_GPU_COUNT}" \
     "${FINAL_AUDIT_ARGS[@]}" \
     --output "${FINAL_AUDIT}"

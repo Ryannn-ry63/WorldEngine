@@ -31,9 +31,13 @@ export DIFFUSIONDRIVE_GRPO_CONFIG="${SCRIPT_DIR}/../../configs/diffusiondrive/e2
 
 BASELINE="${DIFFUSIONDRIVE_GRPO_BASELINE}"
 BASELINE_SHA256="1c450bad0cf62ab9110a8101d2ff6c96984541bd975ddea598ddb2add086a514"
-METHOD="scene_conditioned_exact_group_grpo_v3_rare_rollout_v1"
-ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1"
-DATA_ROOT="${ROOT}/data"
+METHOD="${DIFFUSIONDRIVE_RARE_ROLLOUT_METHOD:-scene_conditioned_exact_group_grpo_v3_rare_rollout_v1}"
+EXPECTED_DATA_METHOD="${DIFFUSIONDRIVE_RARE_ROLLOUT_DATA_METHOD:-diffusiondrive_v3_rare_rollout_mixture_v1}"
+ROOT="${DIFFUSIONDRIVE_RARE_ROLLOUT_ROOT:-${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_rollout_v1}"
+DATA_ROOT="${DIFFUSIONDRIVE_RARE_ROLLOUT_DATA_ROOT:-${ROOT}/data}"
+MODEL_PREFIX="${DIFFUSIONDRIVE_RARE_ROLLOUT_MODEL_PREFIX:-e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1}"
+FORMAL_NOTE="${DIFFUSIONDRIVE_RARE_ROLLOUT_FORMAL_NOTE:-V3 rare-rollout-v1; epoch100 behavior; fresh selector; fixed compute}"
+LEGACY_AGGREGATE="${DIFFUSIONDRIVE_RARE_ROLLOUT_LEGACY_AGGREGATE:-1}"
 REAL_CACHE_ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/cache/full"
 MODEL_ROOT="${ROOT}/models"
 FORMAL_ROOT="${ROOT}/formal"
@@ -125,6 +129,14 @@ audit=json.load(open(sys.argv[3]))
 checkpoint=pathlib.Path(sys.argv[4])
 assert report["status"]==manifest["status"]==audit["status"]=="PASS"
 assert report["method"]==sys.argv[5]
+expected_data_method=sys.argv[6]
+if expected_data_method=="diffusiondrive_v3_rare_rollout_mixture_v1":
+    assert report["source_kind"] in (
+        expected_data_method,
+        "full_navtrain_real_rare_plus_filtered_online_rollout_v1",
+    )
+else:
+    assert report["source_kind"]==expected_data_method
 assert report["source_policy"]=="immutable_epoch100_diffusiondrive"
 assert report["fresh_selector_initialization"]=="exact_zero"
 assert report["sampling"]["total_examples"]==304272
@@ -135,7 +147,8 @@ assert sha(checkpoint)==manifest["checkpoint_sha256"]==audit["checkpoint_sha256"
 assert audit["changed_baseline_tensor_count"]==0
 assert audit["scene_selector_tensor_count"]==54
 ' "${seed_root}/train/report.json" "${seed_root}/checkpoint_manifest.json" \
-        "${seed_root}/checkpoint_audit.json" "${seed_root}/checkpoint.pth" "${METHOD}"
+        "${seed_root}/checkpoint_audit.json" "${seed_root}/checkpoint.pth" \
+        "${METHOD}" "${EXPECTED_DATA_METHOD}"
 }
 
 train_seed() {
@@ -162,7 +175,8 @@ train_seed() {
         --temperature 1.0 --learning-rate 1e-4 --kl-weight 1e-3 \
         --seed "${seed}" --epochs 16 --examples-per-cache-epoch 6339 \
         --checkpoint-epochs 16 --batch-size 64 --device cuda \
-        --method-name "${METHOD}" --formal-contract
+        --method-name "${METHOD}" --expected-data-method "${EXPECTED_DATA_METHOD}" \
+        --formal-contract
     local state="${seed_root}/train/epoch_16_scene_selector.pt"
     local state_sha
     state_sha="$(sha256sum "${state}" | awk '{print $1}')"
@@ -171,7 +185,7 @@ train_seed() {
         --scene-selector-state "${state}" \
         --expected-selector-sha256 "${state_sha}" \
         --expected-method "${METHOD}" \
-        --release-name "e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s${seed}" \
+        --release-name "${MODEL_PREFIX}_s${seed}" \
         --output "${seed_root}/checkpoint.pth" \
         --manifest "${seed_root}/checkpoint_manifest.json"
     "${ALGENGINE_PYTHON}" "${CHECKPOINT_AUDIT}" \
@@ -214,7 +228,7 @@ done
 
 evaluation_ready() {
     local seed="$1"
-    local model="e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s${seed}"
+    local model="${MODEL_PREFIX}_s${seed}"
     local summary="${FORMAL_ROOT}/formal_eval/${model}/summary.json"
     local manifest="${MODEL_ROOT}/seed${seed}/checkpoint_manifest.json"
     [[ -f "${summary}" && -f "${manifest}" ]] || return 1
@@ -238,13 +252,13 @@ for seed in "${TRAIN_SEEDS[@]}"; do
     fi
     checkpoint="${MODEL_ROOT}/seed${seed}/checkpoint.pth"
     checkpoint_sha="$(sha256sum "${checkpoint}" | awk '{print $1}')"
-    model="e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s${seed}"
+    model="${MODEL_PREFIX}_s${seed}"
     "${FORMAL_TABLE}" "${checkpoint}" "${checkpoint_sha}" "${model}" "${seed}" \
-        "V3 rare-rollout-v1; epoch100 behavior; fresh selector; fixed compute"
+        "${FORMAL_NOTE}"
     evaluation_ready "${seed}"
 done
 
-if [[ "${MODE}" == "all" ]]; then
+if [[ "${MODE}" == "all" && "${LEGACY_AGGREGATE}" == "1" ]]; then
     CURRENT_STAGE=aggregate_formal_results
     summary_args=()
     for seed in 0 1 2; do
@@ -267,9 +281,13 @@ printf 'PASS code_sha=%s completed_utc=%s\n' \
 trap - ERR
 if [[ "${MODE}" == "seed" ]]; then
     echo "PASS DiffusionDrive V3 rare-rollout finish seed ${TARGET_SEED}"
-    echo "summary: ${FORMAL_ROOT}/formal_eval/e2e_diffusiondrive_grpo_selector_v3_rare_rollout_v1_s${TARGET_SEED}/summary.json"
+    echo "summary: ${FORMAL_ROOT}/formal_eval/${MODEL_PREFIX}_s${TARGET_SEED}/summary.json"
 else
     echo "PASS DiffusionDrive V3 rare-rollout finish pipeline"
-    echo "comparison: ${FORMAL_ROOT}/rare_rollout_comparison.md"
+    if [[ "${LEGACY_AGGREGATE}" == "1" ]]; then
+        echo "comparison: ${FORMAL_ROOT}/rare_rollout_comparison.md"
+    else
+        echo "formal summaries: ${FORMAL_ROOT}/formal_eval/${MODEL_PREFIX}_s{0,1,2}/summary.json"
+    fi
 fi
 echo "persistent_log: ${LOG_FILE}"

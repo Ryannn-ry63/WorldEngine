@@ -36,7 +36,7 @@ def sha256_file(path: Path) -> str:
 
 def load_scenario_contract(
     path: Path, maximum_scenarios: int | None = None
-) -> tuple[set[str], set[str], dict[str, int]]:
+) -> tuple[set[str], set[str], dict[str, int], dict[str, dict]]:
     with path.open("rb") as stream:
         payload = pickle.load(stream)
     if not isinstance(payload, dict) or not payload:
@@ -46,6 +46,7 @@ def load_scenario_contract(
         values = values[:maximum_scenarios]
     input_scenes = {str(scene_id) for scene_id, _ in values}
     excluded_short: dict[str, int] = {}
+    scene_contracts: dict[str, dict] = {}
     for scene_id, scene in values:
         if not isinstance(scene, dict) or "log_length" not in scene:
             raise RuntimeError(f"scenario has no auditable log_length: {scene_id}")
@@ -59,10 +60,25 @@ def load_scenario_contract(
             raise RuntimeError(f"scenario has negative log_length: {scene_id}")
         if log_length < REQUIRED_MINIMUM_LOG_LENGTH:
             excluded_short[str(scene_id)] = log_length
+        metadata = scene.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        origin = str(
+            metadata.get("rollout_origin_token")
+            or str(scene_id).rsplit("-", 1)[-1]
+        )
+        if not origin or origin == str(scene_id):
+            raise RuntimeError(f"scenario has no rollout origin: {scene_id}")
+        scene_contracts[str(scene_id)] = {
+            "origin": origin,
+            "source_kind": metadata.get("rollout_source_kind"),
+            "log_name": metadata.get("rollout_log_name"),
+            "paired_common_token": metadata.get("paired_common_token"),
+        }
     collectable_scenes = input_scenes - set(excluded_short)
     if not collectable_scenes:
         raise RuntimeError("scenario shard has no collectable scenarios")
-    return input_scenes, collectable_scenes, excluded_short
+    return input_scenes, collectable_scenes, excluded_short, scene_contracts
 
 
 def short_exclusion_digest(excluded_short: dict[str, int]) -> str:
@@ -137,7 +153,7 @@ def audit_lane(
     expected_workers: int,
     maximum_scenarios: int | None,
 ) -> dict:
-    input_scenes, expected_scenes, excluded_short = load_scenario_contract(
+    input_scenes, expected_scenes, excluded_short, scene_contracts = load_scenario_contract(
         scenario_file, maximum_scenarios
     )
     report_paths, outcomes = load_reports(root)
@@ -166,6 +182,7 @@ def audit_lane(
     eligible_plan_failure = 0
     eligible_low_ep = 0
     maximum_parity = 0.0
+    source_counts = Counter()
     for path in records:
         with path.open("rb") as stream:
             row = pickle.load(stream)
@@ -181,9 +198,21 @@ def audit_lane(
         step = int(row["worldengine_step"])
         if scene not in expected_scenes:
             raise RuntimeError(f"record belongs to another lane: {path}")
-        origin = scene.rsplit("-", 1)[-1]
+        contract = scene_contracts[scene]
+        origin = contract["origin"]
         if str(row.get("rollout_origin_token")) != origin:
             raise RuntimeError(f"rollout origin token drifted: {path}")
+        if contract["source_kind"] is not None:
+            for record_key, contract_key in (
+                ("rollout_source_kind", "source_kind"),
+                ("rollout_log_name", "log_name"),
+                ("paired_common_token", "paired_common_token"),
+            ):
+                if str(row.get(record_key)) != str(contract[contract_key]):
+                    raise RuntimeError(
+                        f"rollout metadata {record_key} drifted: {path}"
+                    )
+            source_counts[str(contract["source_kind"])] += 1
         identity = (scene, step)
         if identity in seen:
             raise RuntimeError(f"duplicate logical rollout frame: {identity}")
@@ -320,6 +349,7 @@ def audit_lane(
             np.mean(np.asarray(oracle_rewards) - np.asarray(selected_rewards))
         ),
         "maximum_deployed_candidate_parity_error": maximum_parity,
+        "rollout_source_record_counts": dict(sorted(source_counts.items())),
         "resolved_config_sha256_by_worker": {
             key: next(iter(value)) for key, value in sorted(resolved_by_worker.items())
         },

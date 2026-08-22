@@ -24,6 +24,8 @@ from build_grpo_selector_v3_rare_rollout_data import (
 
 
 METHOD = "scene_conditioned_exact_group_grpo_v3_rare_rollout_v1"
+BWM_DATA_METHOD = "diffusiondrive_v3_rare_rollout_bwm_mixture_v1"
+BWM_METHOD = "scene_conditioned_exact_group_grpo_v3_rare_rollout_bwm_v1"
 FORMAL_EPOCHS = 16
 FORMAL_EXAMPLES_PER_CACHE_EPOCH = 6339
 FORMAL_BATCH_SIZE = 64
@@ -63,8 +65,11 @@ def load_hard_pool(path: Path, expected_sha: str) -> list[dict]:
 
 def validate_synthetic_cache(cache: dict, manifest: dict) -> None:
     count = int(manifest["filtered_synthetic_records"])
+    expected_source_kind = manifest.get(
+        "synthetic_cache_source_kind", "base_policy_rollout"
+    )
     if cache.get("schema_version") != 3 or cache.get("source_kind") != (
-        "base_policy_rollout"
+        expected_source_kind
     ):
         raise RuntimeError("synthetic cache schema drifted")
     required = {
@@ -93,7 +98,7 @@ def load_contract(args):
     manifest = json.loads(manifest_path.read_text())
     if (
         manifest.get("status") != "PASS"
-        or manifest.get("method") != DATA_METHOD
+        or manifest.get("method") != args.expected_data_method
         or manifest.get("baseline_checkpoint_sha256") != BASELINE_SHA256
         or manifest.get("behavior_policy_is_trained_v3") is not False
         or manifest.get("mixture_contract", {}).get("overall_common_fraction") != 0.5
@@ -218,6 +223,7 @@ def mixed_batch(
 
 
 def validate_formal_args(args) -> None:
+    expected_method = BWM_METHOD if args.expected_data_method == BWM_DATA_METHOD else METHOD
     expected = {
         "temperature": 1.0,
         "learning_rate": 1e-4,
@@ -225,7 +231,7 @@ def validate_formal_args(args) -> None:
         "epochs": FORMAL_EPOCHS,
         "examples_per_cache_epoch": FORMAL_EXAMPLES_PER_CACHE_EPOCH,
         "batch_size": FORMAL_BATCH_SIZE,
-        "method_name": METHOD,
+        "method_name": expected_method,
     }
     drift = {
         key: {"actual": getattr(args, key), "expected": value}
@@ -240,7 +246,7 @@ def save_selector_state(path, model, model_config, args, epoch, manifest_path, p
     payload = {
         "schema_version": 3,
         "method": args.method_name,
-        "source_kind": "full_navtrain_real_rare_plus_filtered_online_rollout_v1",
+        "source_kind": args.expected_data_method,
         "implementation_files": implementation_provenance(),
         "scene_selector_state": {
             key: value.detach().cpu() for key, value in model.state_dict().items()
@@ -262,8 +268,13 @@ def save_selector_state(path, model, model_config, args, epoch, manifest_path, p
 
 
 def train(args) -> dict:
+    args.expected_data_method = getattr(args, "expected_data_method", DATA_METHOD)
+    if args.expected_data_method not in (DATA_METHOD, BWM_DATA_METHOD):
+        raise ValueError(f"unsupported data method: {args.expected_data_method}")
     if args.method_name is None:
-        args.method_name = METHOD
+        args.method_name = (
+            BWM_METHOD if args.expected_data_method == BWM_DATA_METHOD else METHOD
+        )
     if args.formal_contract:
         validate_formal_args(args)
     if args.temperature <= 0 or args.learning_rate <= 0 or args.kl_weight < 0:
@@ -293,7 +304,17 @@ def train(args) -> dict:
         ]
         hard_rows = real_rows[: args.smoke_limit_hard_pool]
         if synthetic_rows and args.smoke_limit_hard_pool > 1:
-            hard_rows[-1] = synthetic_rows[0]
+            if args.smoke_require_bwm:
+                bwm_rows = [
+                    row
+                    for row in synthetic_rows
+                    if str(row.get("source_kind", "")).startswith("bwm_")
+                ]
+                if not bwm_rows:
+                    raise RuntimeError("smoke hard pool has no BWM synthetic row")
+                hard_rows[-1] = bwm_rows[0]
+            else:
+                hard_rows[-1] = synthetic_rows[0]
     minimum_hard_draws = args.epochs * (args.examples_per_cache_epoch // 2)
     if len(hard_rows) > minimum_hard_draws:
         raise RuntimeError(
@@ -463,7 +484,7 @@ def train(args) -> dict:
         "schema_version": 3,
         "status": "PASS",
         "method": args.method_name,
-        "source_kind": "full_navtrain_real_rare_plus_filtered_online_rollout_v1",
+        "source_kind": args.expected_data_method,
         "source_policy": "immutable_epoch100_diffusiondrive",
         "baseline_checkpoint_sha256": BASELINE_SHA256,
         "fresh_selector_initialization": "exact_zero",
@@ -528,8 +549,14 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=FORMAL_BATCH_SIZE)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--method-name")
+    parser.add_argument(
+        "--expected-data-method",
+        choices=(DATA_METHOD, BWM_DATA_METHOD),
+        default=DATA_METHOD,
+    )
     parser.add_argument("--formal-contract", action="store_true")
     parser.add_argument("--smoke-limit-hard-pool", type=int)
+    parser.add_argument("--smoke-require-bwm", action="store_true")
     return parser.parse_args()
 
 
