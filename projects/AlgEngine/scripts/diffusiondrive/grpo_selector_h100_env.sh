@@ -6,7 +6,9 @@ PS1="${PS1:-diffusiondrive-h100}"
 . /inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/dotfiles/.bashrc
 set -u
 
-export WORLDENGINE_ROOT=/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine
+# Honor the code root selected by an isolated Git worktree.  Keep the
+# historical main-worktree path only as a fallback for legacy launchers.
+export WORLDENGINE_ROOT="${WORLDENGINE_ROOT:-/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine}"
 export SIMENGINE_ROOT="${WORLDENGINE_ROOT}/projects/SimEngine"
 export ALGENGINE_ROOT="${WORLDENGINE_ROOT}/projects/AlgEngine"
 export ALGENGINE_ENV="${DIFFUSIONDRIVE_ALGENGINE_ENV_OVERRIDE:-/inspire/hdd/global_user/wangcaojun-240208020180/miniconda3/envs/algengine}"
