@@ -71,6 +71,7 @@ def load_scenario_contract(
             raise RuntimeError(f"scenario has no rollout origin: {scene_id}")
         scene_contracts[str(scene_id)] = {
             "origin": origin,
+            "sidecar_prefix": metadata.get("rollout_sidecar_prefix"),
             "source_kind": metadata.get("rollout_source_kind"),
             "log_name": metadata.get("rollout_log_name"),
             "paired_common_token": metadata.get("paired_common_token"),
@@ -204,6 +205,7 @@ def audit_lane(
             raise RuntimeError(f"rollout origin token drifted: {path}")
         if contract["source_kind"] is not None:
             for record_key, contract_key in (
+                ("rollout_sidecar_prefix", "sidecar_prefix"),
                 ("rollout_source_kind", "source_kind"),
                 ("rollout_log_name", "log_name"),
                 ("paired_common_token", "paired_common_token"),

@@ -226,6 +226,16 @@ async def run_inference_loop(model, cfg, logger, rollout_provenance):
         MAX_STEP = cfg.sim.maximum_step
 
         while step <= MAX_STEP:
+            if not current_queue:
+                if os.path.exists(stop_file_path):
+                    logger.info(
+                        "Inference queue is empty after the simulation completion "
+                        "signal; exiting normally"
+                    )
+                    break
+                raise RuntimeError(
+                    "Inference queue became empty without a simulation completion signal"
+                )
             retry_count = 0
             logger.info(f"processing {os.path.basename(current_queue[-1])}")
             ann_file = merge_ann_files(cfg, current_queue, scene_step + cfg.queue_length)

@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 
-METHOD = "diffusiondrive_v3_rare_rollout_bwm_scenario_contract_v1"
+METHOD = "diffusiondrive_v3_rare_rollout_bwm_scenario_contract_v2"
 EXPECTED_SOURCE_NAMES = (
     "bwm_collision",
     "bwm_low_ep",
@@ -176,6 +176,7 @@ def prepare(
             metadata = dict(scene.get("metadata", {}))
             additions = {
                 "rollout_origin_token": origin_token,
+                "rollout_sidecar_prefix": f"{origin_token}-{variant}",
                 "rollout_source_kind": source_name,
                 "rollout_log_name": log_name,
                 "paired_common_token": common_token,
@@ -201,9 +202,8 @@ def prepare(
             source_origin_tokens[source_name].add(origin_token)
             pairing_counts[pairing_method] += 1
             mapping_digest.update(
-                f"{source_name}\t{scene_id}\t{origin_token}\t{common_token}\t{lane}\n".encode(
-                    "utf-8"
-                )
+                f"{source_name}\t{scene_id}\t{origin_token}\t"
+                f"{common_token}\t{origin_token}-{variant}\t{lane}\n".encode("utf-8")
             )
 
     if any(not lane for lane in lanes):
@@ -224,7 +224,7 @@ def prepare(
         )
 
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "PASS",
         "method": METHOD,
         "source_kind": "senior_published_bwm_worlds_replayed_by_diffusiondrive",

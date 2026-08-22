@@ -54,6 +54,7 @@ from worldengine.components.agents.policy.pdm_planner.observation.pdm_occupancy_
 )
 from worldengine.manager.base_manager import BaseManager
 from worldengine.manager.dense_reward_manager import DenseRewardManager
+from worldengine.manager.diffusiondrive_sidecar_contract import sidecar_prefixes
 
 
 logger = logging.getLogger(__name__)
@@ -204,13 +205,7 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
         self.use_cuda = torch.cuda.is_available()
 
     def _scene_prefixes(self):
-        values = []
-        for key in ("id", "token"):
-            value = self.current_scene.get(key)
-            if value:
-                value = str(value)
-                values.extend((value, value.rsplit("-", 1)[-1]))
-        return tuple(dict.fromkeys(values))
+        return sidecar_prefixes(self.current_scene)
 
     def _load_sidecar(self):
         root = Path(
@@ -338,12 +333,23 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
             raise RuntimeError(
                 f"cannot recover rare origin token from scene {rollout_scene_id}"
             )
+        actual_sidecar_prefix = str(sidecar.get("scene_prefix", ""))
+        expected_sidecar_prefix = metadata.get("rollout_sidecar_prefix")
+        if expected_sidecar_prefix is not None and actual_sidecar_prefix != str(
+            expected_sidecar_prefix
+        ):
+            raise RuntimeError(
+                "DiffusionDrive sidecar prefix disagrees with scenario metadata: "
+                f"actual={actual_sidecar_prefix!r} "
+                f"expected={expected_sidecar_prefix!r}"
+            )
         record.update(
             schema_version=2,
             record_type="diffusiondrive_closed_loop_candidate_reward",
             rollout_scene_id=rollout_scene_id,
             rollout_scene_token=str(self.current_scene.get("token")),
             rollout_origin_token=origin_token,
+            rollout_sidecar_prefix=actual_sidecar_prefix,
             rollout_source_kind=metadata.get("rollout_source_kind"),
             rollout_log_name=metadata.get("rollout_log_name"),
             paired_common_token=metadata.get("paired_common_token"),

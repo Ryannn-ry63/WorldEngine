@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import pickle
 import sys
@@ -16,6 +17,16 @@ prepare = importlib.import_module(
     "prepare_grpo_selector_v3_rare_rollout_bwm_scenarios"
 )
 builder = importlib.import_module("build_grpo_selector_v3_rare_rollout_bwm_data")
+SIDECAR_CONTRACT_PATH = (
+    SCRIPT_DIR.parents[2]
+    / "SimEngine/worldengine/manager/diffusiondrive_sidecar_contract.py"
+)
+sidecar_spec = importlib.util.spec_from_file_location(
+    "diffusiondrive_sidecar_contract_for_test", SIDECAR_CONTRACT_PATH
+)
+sidecar_contract = importlib.util.module_from_spec(sidecar_spec)
+assert sidecar_spec.loader is not None
+sidecar_spec.loader.exec_module(sidecar_contract)
 
 
 def test_bwm_scenarios_are_disjoint_paired_and_deterministic(tmp_path):
@@ -79,6 +90,32 @@ def test_bwm_scenarios_are_disjoint_paired_and_deterministic(tmp_path):
             metadata = scene["metadata"]
             assert metadata["rollout_source_kind"] in prepare.EXPECTED_SOURCE_NAMES
             assert metadata["paired_common_token"].startswith("common_")
+            log_name, origin, variant = prepare.parse_scenario_identity(scene["id"])
+            assert metadata["rollout_log_name"] == log_name
+            assert metadata["rollout_sidecar_prefix"] == f"{origin}-{variant}"
+
+
+def test_bwm_explicit_sidecar_prefix_precedes_legacy_ambiguous_names():
+    scene = {
+        "id": "log-rare_token-005",
+        "token": "log-rare_token-goal_conditional_copy_with_noise",
+        "metadata": {"rollout_sidecar_prefix": "rare_token-005"},
+    }
+    prefixes = sidecar_contract.sidecar_prefixes(scene)
+    assert prefixes[0] == "rare_token-005"
+    assert "005" in prefixes
+    assert "goal_conditional_copy_with_noise" in prefixes
+
+
+def test_sidecar_prefix_rejects_path_traversal():
+    try:
+        sidecar_contract.sidecar_prefixes(
+            {"id": "scene", "metadata": {"rollout_sidecar_prefix": "../bad"}}
+        )
+    except RuntimeError as error:
+        assert "unsafe" in str(error)
+    else:
+        raise AssertionError("unsafe sidecar prefix was accepted")
 
 
 def test_bwm_prepare_rejects_navtest_overlap(tmp_path):

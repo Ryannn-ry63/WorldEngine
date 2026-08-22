@@ -42,7 +42,11 @@ def load_jsonl(path: Path) -> list[dict]:
 
 def load_scenario_contract(audit_path: Path) -> tuple[dict, dict[str, dict]]:
     audit = load_json(audit_path)
-    if audit.get("method") != SCENARIO_METHOD or audit.get("num_lanes") != 3:
+    if (
+        audit.get("schema_version") != 2
+        or audit.get("method") != SCENARIO_METHOD
+        or audit.get("num_lanes") != 3
+    ):
         raise RuntimeError("BWM scenario audit contract drifted")
     contracts = {}
     for lane in audit["lanes"]:
@@ -57,6 +61,7 @@ def load_scenario_contract(audit_path: Path) -> tuple[dict, dict[str, dict]]:
             metadata = scene.get("metadata", {})
             required = (
                 "rollout_origin_token",
+                "rollout_sidecar_prefix",
                 "rollout_source_kind",
                 "rollout_log_name",
                 "paired_common_token",
@@ -88,6 +93,7 @@ def load_record(path: Path, contracts: dict[str, dict]) -> dict:
     contract = contracts[scene]
     expected = {
         "rollout_origin_token": contract["rollout_origin_token"],
+        "rollout_sidecar_prefix": contract["rollout_sidecar_prefix"],
         "rollout_source_kind": contract["rollout_source_kind"],
         "rollout_log_name": contract["rollout_log_name"],
         "paired_common_token": contract["paired_common_token"],
