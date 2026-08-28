@@ -116,6 +116,15 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
   CHECKPOINT EXPECTED_SHA256 MODEL_NAME EVAL_SEED NOTE
 ```
 
+After a successful three-seed formal train, the preferred resume-safe entry
+reads and verifies the manifest, evaluates seeds 0/1/2 serially, skips only
+fully audited summaries, and collects the three rows automatically:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+  ./run_diffusiondrive_trajectory_set_reasoner_v1_eval_all_8hopper.sh
+```
+
 The standalone materializer is only for inspecting one development checkpoint;
 it does not replace independent formal training:
 

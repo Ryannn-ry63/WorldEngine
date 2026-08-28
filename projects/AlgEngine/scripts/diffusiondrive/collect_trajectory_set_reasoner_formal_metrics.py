@@ -24,7 +24,7 @@ def main():
     args = parser.parse_args()
 
     seeds = {}
-    checkpoint_sha = None
+    checkpoint_sha_by_seed = {}
     inputs = []
     for argument in args.summary:
         path = argument.expanduser().resolve()
@@ -34,10 +34,7 @@ def main():
         seed = str(int(row["eval_seed"]))
         if seed in seeds:
             raise RuntimeError(f"duplicate formal eval seed: {seed}")
-        if checkpoint_sha is None:
-            checkpoint_sha = row["checkpoint_sha256"]
-        elif checkpoint_sha != row["checkpoint_sha256"]:
-            raise RuntimeError("formal summaries use different checkpoints")
+        checkpoint_sha_by_seed[seed] = row["checkpoint_sha256"]
         metrics = row["metrics"]
         nonreactive = metrics["closedloop_nonreactive"]
         reactive = metrics["closedloop_reactive"]
@@ -53,14 +50,26 @@ def main():
             ),
             "navtest_pdm": float(metrics["openloop_navtest"]["score"]),
         }
-        inputs.append({"path": str(path), "sha256": sha256_file(path)})
+        inputs.append(
+            {
+                "eval_seed": int(seed),
+                "checkpoint_sha256": row["checkpoint_sha256"],
+                "path": str(path),
+                "sha256": sha256_file(path),
+            }
+        )
     if set(seeds) != {"0", "1", "2"}:
         raise RuntimeError(f"expected formal seeds 0/1/2, got {sorted(seeds)}")
+    if len(set(checkpoint_sha_by_seed.values())) != 3:
+        raise RuntimeError(
+            "formal promotion requires three independently trained checkpoints"
+        )
     output_payload = {
         "schema_version": 1,
         "status": "PASS",
         "method": "trajectory_set_reasoner_three_seed_formal_metrics_v1",
-        "checkpoint_sha256": checkpoint_sha,
+        "independent_training_seeds": [0, 1, 2],
+        "checkpoint_sha256_by_seed": checkpoint_sha_by_seed,
         "inputs": inputs,
         "seeds": seeds,
     }

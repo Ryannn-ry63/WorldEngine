@@ -8,6 +8,12 @@ a zero-initialized residual to the immutable reference logits.
 import os
 
 
+reasoner_ablation = os.getenv(
+    "DIFFUSIONDRIVE_GRPO_REASONER_ABLATION", "full"
+)
+if reasoner_ablation not in ("full", "temporal_only", "relational_only", "no_scene_context"):
+    raise ValueError(f"unsupported reasoner ablation: {reasoner_ablation}")
+
 _base_ = ["./e2e_diffusiondrive_grpo_selector.py"]
 
 model = dict(
@@ -32,10 +38,10 @@ model = dict(
             num_route_steps=8,
             num_temporal_layers=2,
             num_relation_layers=2,
-            use_temporal_reasoning=True,
-            use_relational_reasoning=True,
+            use_temporal_reasoning=reasoner_ablation != "relational_only",
+            use_relational_reasoning=reasoner_ablation != "temporal_only",
             use_route_bev=True,
-            use_scene_context=True,
+            use_scene_context=reasoner_ablation != "no_scene_context",
         ),
     )
 )
@@ -43,6 +49,7 @@ model = dict(
 selector_reward_contract = dict(
     policy_objective="exact_complete_action_expected_advantage",
     architecture="trajectory_set_reasoning_residual_selector_v1",
+    ablation=reasoner_ablation,
     policy_temperature="environment_selected",
     fixed_ratio_clip=False,
     residual_on_frozen_reference=True,
