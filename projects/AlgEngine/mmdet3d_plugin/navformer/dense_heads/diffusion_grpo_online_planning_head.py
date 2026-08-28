@@ -31,7 +31,7 @@ from .diffusion_planning_head import (
     gen_sineembed_for_position,
 )
 from .diffusion_grpo_scene_selector import (
-    SceneConditionedTrajectorySetSelector,
+    build_scene_selector,
     sample_final_trajectory_bev_features,
 )
 from .diffusiondrive_online_pdm_reward import OnlineDiffusionDrivePDMReward
@@ -164,10 +164,7 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         self.reference_selector.requires_grad_(False)
         self.reference_selector.eval()
         self._reference_selector_initialized = False
-        self.scene_selector = (
-            SceneConditionedTrajectorySetSelector(**scene_selector)
-            if scene_selector is not None else None
-        )
+        self.scene_selector = build_scene_selector(scene_selector) if scene_selector else None
         self.online_reward = (
             OnlineDiffusionDrivePDMReward(**online_reward)
             if online_reward is not None

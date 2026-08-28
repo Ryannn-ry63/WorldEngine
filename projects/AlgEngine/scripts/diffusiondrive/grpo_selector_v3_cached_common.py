@@ -22,19 +22,26 @@ COMPONENT_NAMES = (
 )
 
 
-def _load_selector_class():
+def _load_selector_module():
     algengine_root = Path(__file__).resolve().parents[2]
     path = (
         algengine_root
         / "mmdet3d_plugin/navformer/dense_heads/diffusion_grpo_scene_selector.py"
     )
-    spec = importlib.util.spec_from_file_location("diffusion_grpo_scene_selector_v3", path)
+    spec = importlib.util.spec_from_file_location("diffusion_grpo_scene_selector", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.SceneConditionedTrajectorySetSelector
+    return module
 
 
-SceneConditionedTrajectorySetSelector = _load_selector_class()
+SELECTOR_MODULE = _load_selector_module()
+SceneConditionedTrajectorySetSelector = (
+    SELECTOR_MODULE.SceneConditionedTrajectorySetSelector
+)
+TrajectorySetReasoningResidualSelector = (
+    SELECTOR_MODULE.TrajectorySetReasoningResidualSelector
+)
+build_scene_selector = SELECTOR_MODULE.build_scene_selector
 
 
 def sha256_file(path):
@@ -86,23 +93,63 @@ def load_cache(path, expected_split=None):
     return cache, manifest
 
 
-def model_from_cache(cache, ablation="full"):
+def model_from_cache(
+    cache,
+    ablation="full",
+    architecture="scene_conditioned_v3",
+    architecture_config=None,
+):
+    """Build either frozen V3 or the trajectory-set reasoner from one cache."""
     config = dict(cache["scene_selector_config"])
-    allowed = {
-        "full",
-        "feature_only",
-        "feature_geometry",
-        "feature_geometry_route",
-    }
-    if ablation not in allowed:
-        raise ValueError(f"unknown V3 ablation: {ablation}")
-    config.update(
-        use_trajectory_geometry=ablation != "feature_only",
-        use_route_bev=ablation in {"full", "feature_geometry_route"},
-        use_scene_context=ablation == "full",
-        use_set_attention=ablation == "full",
-    )
-    return SceneConditionedTrajectorySetSelector(**config), config
+    if architecture in {"scene_conditioned_v3", "v3"}:
+        allowed = {
+            "full",
+            "feature_only",
+            "feature_geometry",
+            "feature_geometry_route",
+        }
+        if ablation not in allowed:
+            raise ValueError(f"unknown V3 ablation: {ablation}")
+        config.update(
+            use_trajectory_geometry=ablation != "feature_only",
+            use_route_bev=ablation in {"full", "feature_geometry_route"},
+            use_scene_context=ablation == "full",
+            use_set_attention=ablation == "full",
+        )
+    elif architecture == "trajectory_set_reasoner":
+        allowed = {"full", "temporal_only", "relational_only", "no_scene_context"}
+        if ablation not in allowed:
+            raise ValueError(f"unknown trajectory-set ablation: {ablation}")
+        shared_keys = {
+            "feature_dim",
+            "model_dim",
+            "route_bev_dim",
+            "context_dim",
+            "num_heads",
+            "feedforward_dim",
+            "num_route_steps",
+        }
+        config = {key: value for key, value in config.items() if key in shared_keys}
+        config.update(
+            architecture="trajectory_set_reasoner",
+            num_temporal_layers=2,
+            num_relation_layers=2,
+            use_temporal_reasoning=ablation != "relational_only",
+            use_relational_reasoning=ablation != "temporal_only",
+            use_route_bev=True,
+            use_scene_context=ablation != "no_scene_context",
+        )
+    else:
+        raise ValueError(f"unknown selector architecture: {architecture}")
+    if architecture_config:
+        config.update(dict(architecture_config))
+    return build_scene_selector(config), config
+
+
+def model_from_config(config):
+    """Rebuild the exact checkpoint architecture without consulting a cache."""
+
+    return build_scene_selector(dict(config))
 
 
 def batch_inputs(cache, indices, device):
