@@ -108,6 +108,7 @@ def main():
             (f"{openscene_base}/diffusiondrive_preaction_records", "*_preaction.pkl", False),
             (f"{openscene_base}/diffusiondrive_ccv_records", "*_ccv.pkl", False),
             (f"{openscene_base}/diffusiondrive_v4_causal_records", "*_v4causal.pkl", False),
+            (f"{openscene_base}/diffusiondrive_cfpi_causal_records", "*_cfpicausal.pkl", False),
         ]
 
         for subdir, pattern, use_symlink in link_tasks:

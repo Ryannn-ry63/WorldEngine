@@ -120,6 +120,7 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         reference_checkpoint_sha256: Optional[str] = None,
         candidate_noise_namespace: Optional[str] = None,
         scene_selector: Optional[Dict] = None,
+        scene_selector_score_mode: str = "residual",
         online_reward: Optional[Dict] = None,
         export_rollout_context: bool = False,
         **kwargs,
@@ -165,6 +166,11 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         self.reference_selector.eval()
         self._reference_selector_initialized = False
         self.scene_selector = build_scene_selector(scene_selector) if scene_selector else None
+        if scene_selector_score_mode not in {"residual", "direct_q"}:
+            raise ValueError("scene_selector_score_mode must be residual or direct_q")
+        if scene_selector_score_mode == "direct_q" and self.scene_selector is None:
+            raise ValueError("direct_q requires a scene selector")
+        self.scene_selector_score_mode = scene_selector_score_mode
         self.online_reward = (
             OnlineDiffusionDrivePDMReward(**online_reward)
             if online_reward is not None
@@ -516,7 +522,10 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
                 candidates_8.detach(),
                 **selector_inputs,
             )
-            current_logits = reference_logits.detach() + delta_logits
+            current_logits = (
+                delta_logits if self.scene_selector_score_mode == "direct_q"
+                else reference_logits.detach() + delta_logits
+            )
         return current_logits, reference_logits.detach()
 
     def _build_result(

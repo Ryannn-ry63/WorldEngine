@@ -126,3 +126,39 @@ def test_v3_selector_rejects_reward_as_an_input():
     inputs = selector_inputs()
     with pytest.raises(TypeError):
         module(**inputs, candidate_rewards=torch.randn(2, 5))
+
+
+def test_cfpi_direct_q_head_scoring_and_frozen_parameters(tmp_path):
+    head = DiffusionGRPOOnlineSelectorPlanningHead(
+        **head_kwargs(tmp_path), online_reward=None,
+        scene_selector_score_mode="direct_q",
+        scene_selector=dict(feature_dim=32, model_dim=32, route_bev_dim=32,
+                            context_dim=32, geometry_hidden_dim=16, num_heads=4,
+                            feedforward_dim=64, num_set_layers=1),
+    )
+    head.initialize_reference_selector()
+    frozen = {name: parameter.detach().clone() for name, parameter in head.named_parameters()
+              if not parameter.requires_grad}
+    assert frozen and all(name.startswith("scene_selector.")
+                          for name, p in head.named_parameters() if p.requires_grad)
+    with torch.no_grad():
+        head.scene_selector.delta_head[-1].bias.fill_(.4)
+    values = selector_inputs(batch=1, candidates=4, dim=32)
+    features = values.pop("candidate_features")
+    trajectories = values.pop("candidate_trajectories")
+    direct, base = head._selector_outputs(features, trajectories, None, None, None, None,
+                                         context=values)
+    assert torch.allclose(direct, torch.full_like(direct, .4))
+    head.scene_selector_score_mode = "residual"
+    residual, reference = head._selector_outputs(features, trajectories, None, None, None,
+                                                None, context=values)
+    assert torch.equal(base, reference)
+    assert torch.allclose(residual, base + direct)
+    optimizer = torch.optim.SGD([p for p in head.parameters() if p.requires_grad], lr=.01)
+    (-direct[:, 0].mean()).backward()
+    optimizer.step()
+    assert not torch.allclose(head.scene_selector.delta_head[-1].bias,
+                              torch.full_like(head.scene_selector.delta_head[-1].bias, .4))
+    for name, parameter in head.named_parameters():
+        if name in frozen:
+            assert parameter.grad is None and torch.equal(parameter, frozen[name])

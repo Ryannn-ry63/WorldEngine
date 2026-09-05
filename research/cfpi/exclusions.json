@@ -1,0 +1,22 @@
+{
+  "excluded_origin_logs": [
+    "2021.06.09.12.39.51_veh-26_04543_05321",
+    "2021.06.09.14.58.55_veh-35_04695_05321",
+    "2021.06.14.13.28.41_veh-12_01313_01541",
+    "2021.06.14.17.26.26_veh-38_04931_05037",
+    "2021.07.16.00.51.05_veh-17_01352_01901",
+    "2021.07.16.18.06.21_veh-38_03733_04300",
+    "2021.07.24.20.37.45_veh-17_00015_00375",
+    "2021.08.17.16.57.11_veh-08_01200_01636",
+    "2021.08.17.18.13.38_veh-45_00946_01854",
+    "2021.09.15.14.00.15_veh-28_00895_00981",
+    "2021.09.15.14.00.15_veh-28_01611_01874",
+    "2021.09.15.15.34.53_veh-28_01133_01234",
+    "2021.10.05.04.38.41_veh-50_00014_00429",
+    "2021.10.06.19.27.33_veh-28_00121_00289",
+    "2021.10.06.19.27.33_veh-28_00302_00794"
+  ],
+  "source_manifest": "/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine/experiments/worktrees/WorldEngine-selector-rapg-v1/experiments/diffusiondrive/selector_ccv_sweep_v1/runs/ccv_sweep_v1_mergefix_20260904/manifests/master_manifest.json",
+  "source_manifest_sha256": "ad8d853c5fb44f88a443eaa46d099029ba3f889112c9b9bb57662c9934558ac7",
+  "historical_exposure_status": "Known CCV diagnostic logs excluded. Existing V3 pretraining/adaptation exposure is not claimed absent; development/certification requires a separate full-history exposure audit."
+}
