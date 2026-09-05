@@ -3,6 +3,7 @@ import ast
 import csv
 import copy
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -126,6 +127,92 @@ def test_global_log_cap_and_no_silent_source_reassignment():
     source = dict(id="log-0123456789abcdef", token="0123456789abcdef", metadata={})
     with pytest.raises(ValueError):
         c.annotate_scenario(source, "rare_union", "validation")
+
+
+def test_joint_source_repairs_greedy_starvation_without_relaxing(monkeypatch):
+    rare, common = c.ALLOWED_FAMILIES
+    monkeypatch.setattr(c, "stable_digest", lambda *parts: parts[-1])
+    candidates = {
+        rare: [f"a-shared-{i:016x}" for i in range(2)] + [f"z-spare-{i:016x}" for i in range(2, 4)],
+        common: [f"a-shared-{i:016x}" for i in range(4, 6)],
+    }
+    selected, audit = prep.select_source_joint(candidates, per_family=2, maximum_per_log=2)
+    assert audit["legacy_greedy_counts"] == {rare: 2, common: 0}
+    assert audit["selected_counts"] == {rare: 2, common: 2}
+    assert audit["actual_maximum_per_log"] == 2 and audit["augmentations"] > 0
+    assert all(c.scene_origin_log(s) == "z-spare" for s in selected[rare])
+    assert prep.select_source_joint({f: list(reversed(v)) for f, v in reversed(list(candidates.items()))}, 2, 2) == (selected, audit)
+    impossible = {rare: candidates[rare][:2], common: candidates[common]}
+    with pytest.raises(RuntimeError, match="Joint clean source infeasible"):
+        prep.select_source_joint(impossible, 2, 2)
+    with pytest.raises(RuntimeError, match="overlapping"):
+        prep.select_source_joint({rare: candidates[rare], common: candidates[rare]}, 2, 2)
+
+
+def test_joint_source_matches_exhaustive_small_capacity_problems():
+    # 729 independent capacity patterns, compared with exhaustive feasible totals.
+    for numbers in itertools.product(range(3), repeat=6):
+        candidates = {family: [f"log-{log}-{(100*f + 10*log + j):016x}"
+                              for log in range(3) for j in range(numbers[3*f + log])]
+                      for f, family in enumerate(c.ALLOWED_FAMILIES)}
+        reachable = {(0, 0)}
+        for log in range(3):
+            reachable = {(a+x, b+y) for a, b in reachable
+                         for x in range(numbers[log] + 1)
+                         for y in range(numbers[3+log] + 1)
+                         if x+y <= 2 and a+x <= 2 and b+y <= 2}
+        if (2, 2) not in reachable:
+            with pytest.raises(RuntimeError, match="Joint clean source infeasible"):
+                prep.select_source_joint(candidates, 2, 2)
+        else:
+            selected, audit = prep.select_source_joint(candidates, 2, 2)
+            assert all(len(selected[f]) == 2 and set(selected[f]) <= set(candidates[f])
+                       for f in c.ALLOWED_FAMILIES)
+            assert audit["actual_maximum_per_log"] <= 2
+
+
+def test_source_pool_joint_allocation_filtering_materialization_and_resume(tmp_path, monkeypatch):
+    import prepare_selector_v4_causal_source as upstream
+    rare, common = c.ALLOWED_FAMILIES
+    candidates = {rare: [("a-shared", 20), ("a-shared", 20), ("z-spare", 20),
+                          ("z-spare", 20), ("short", 19), ("excluded", 20)],
+                  common: [("a-shared", 20), ("a-shared", 20)]}
+    root = tmp_path / "upstream"
+    tokens, logs = {}, set()
+    for f, family in enumerate(c.ALLOWED_FAMILIES):
+        content = {}
+        for i, (log, length) in enumerate(candidates[family]):
+            token = f"{100*f+i:016x}"
+            scene = f"{log}-{token}"
+            tokens[token], _ = "train", logs.add(log)
+            content[scene] = dict(id=scene, token=token, log_length=length, metadata=dict(
+                nuplan_lidar_pc_tokens=[token], openscene_data_infos_dict={token: dict(log_name=log)}))
+        shard = root / "p2_shards_v1" / family / "shard_000.pkl"
+        c.atomic_pickle(shard, content)
+        c.atomic_json(shard.with_name("index.json"), dict(scenario_family=family, scenario_variant="original",
+            revision="diffusiondrive_grpo_v4_p2_shards_v1", shards=[dict(path=str(shard), scenario_ids=list(content))]))
+    monkeypatch.setattr(upstream, "validate_split_contract", lambda path: ({}, tokens,
+        dict(train=logs, validation=set(), test=set())))
+    monkeypatch.setattr(prep, "historical_exposure", lambda *args: dict(fully_unseen_claim_authorized=False))
+    monkeypatch.setattr(c, "TRAIN_POOL_PER_FAMILY", 2)
+    monkeypatch.setattr(c, "MAXIMUM_POOL_SCENES_PER_LOG", 2)
+    monkeypatch.setattr(c, "stable_digest", lambda *parts: parts[-1])
+    exclusions = tmp_path / "exclusions.json"
+    c.atomic_json(exclusions, dict(excluded_origin_logs=["excluded"] + [f"excluded-{i}" for i in range(14)],
+                                  historical_exposure_status="synthetic"))
+    args = SimpleNamespace(run_root=tmp_path / "run", source_root=root, exclusions=exclusions)
+    audit = prep.source_pool(args)
+    assert audit["train_scenario_count"] == 4
+    assert audit["source_selection"]["eligible_counts"] == {rare: 4, common: 2}
+    assert audit["source_selection"]["legacy_greedy_counts"] == {rare: 2, common: 0}
+    payload = c.load_pickle(audit["train_scenario_file"])
+    assert all(c.source_metadata(row)["split"] == "train" for row in payload.values())
+    assert all(row["log_length"] >= 20 and c.scene_origin_log(scene) != "excluded"
+               for scene, row in payload.items())
+    assert prep.source_pool(args) == audit
+    c.atomic_pickle(shard, dict(changed=True))
+    with pytest.raises(RuntimeError, match="shard drifted"):
+        prep.source_pool(args)
 
 
 def small_model():

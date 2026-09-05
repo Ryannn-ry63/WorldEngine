@@ -389,7 +389,7 @@ class Runner:
         stage = self.args.stage
         if stage in {"preflight", "baseline_train", "sentinel", "pilot", "train_cv", "first_phase"}:
             self.preflight()
-        if stage in {"source", "first_phase"}:
+        if stage == "source":
             self.prepare("source")
         if stage in {"baseline_train", "first_phase"}:
             self.prepare("source")

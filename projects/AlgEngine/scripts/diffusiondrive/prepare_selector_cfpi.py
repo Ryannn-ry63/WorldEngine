@@ -7,7 +7,7 @@ import argparse
 import csv
 import json
 import pickle
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 
 import numpy as np
@@ -194,6 +194,112 @@ def make_target(
     }
 
 
+def select_source_joint(candidates, per_family=512, maximum_per_log=4):
+    """Complete hash-greedy quotas by deterministic residual-network rerouting.
+
+    A family-first greedy failure is not a proof of joint infeasibility. Seed
+    the family -> origin-log capacity network with that greedy allocation,
+    then augment it. Only source IDs are consumed: no outcomes or Q values.
+    """
+    families = common.ALLOWED_FAMILIES
+    if set(candidates) != set(families) or per_family <= 0 or maximum_per_log <= 0:
+        raise ValueError("Invalid joint source contract")
+    ranked, available, greedy, allocated = {}, {}, {}, {}
+    seen, used = set(), Counter()
+    for family in families:
+        values = list(candidates[family])
+        if len(values) != len(set(values)) or seen & set(values):
+            raise RuntimeError("Duplicate or overlapping source scene")
+        seen.update(values)
+        ranked[family] = sorted(values, key=lambda scene: (
+            common.stable_digest("cfpi-source-v1", family, scene), scene))
+        available[family] = Counter(common.scene_origin_log(s) for s in ranked[family])
+        greedy[family], allocated[family] = [], Counter()
+        for scene in ranked[family]:
+            log = common.scene_origin_log(scene)
+            if used[log] < maximum_per_log:
+                greedy[family].append(scene)
+                used[log] += 1
+                allocated[family][log] += 1
+            if len(greedy[family]) == per_family:
+                break
+
+    source, sink = ("source",), ("sink",)
+    graph = defaultdict(dict)
+
+    def edge(left, right, capacity, initial):
+        if not 0 <= initial <= capacity:
+            raise RuntimeError("Invalid initial source allocation")
+        graph[left][right] = capacity - initial
+        graph[right][left] = initial
+
+    logs = sorted({log for family in families for log in available[family]},
+                  key=lambda log: (common.stable_digest("cfpi-source-capacity-v1", log), log))
+    for family in families:
+        node = ("family", family)
+        edge(source, node, per_family, len(greedy[family]))
+        # Counter insertion order is the first scene's frozen hash rank.
+        for log, count in available[family].items():
+            edge(node, ("log", log), min(maximum_per_log, count), allocated[family][log])
+    for log in logs:
+        edge(("log", log), sink, maximum_per_log, used[log])
+    total = sum(map(len, greedy.values()))
+    augmentations = 0
+    while total < per_family * len(families):
+        parents, queue = {source: None}, deque([source])
+        while queue and sink not in parents:
+            left = queue.popleft()
+            for right, capacity in graph[left].items():
+                if capacity > 0 and right not in parents:
+                    parents[right] = left
+                    queue.append(right)
+        if sink not in parents:
+            raise RuntimeError(f"Joint clean source infeasible: maximum {total} < "
+                               f"{per_family * len(families)} with per-log cap {maximum_per_log}; "
+                               "do not relax quotas or exclusions")
+        amount, right = per_family * len(families), sink
+        while parents[right] is not None:
+            left = parents[right]
+            amount = min(amount, graph[left][right])
+            right = left
+        right = sink
+        while parents[right] is not None:
+            left = parents[right]
+            graph[left][right] -= amount
+            graph[right][left] += amount
+            right = left
+        total += amount
+        augmentations += 1
+
+    selected, used = {}, Counter()
+    for family in families:
+        remaining = {log: graph[("log", log)][("family", family)] for log in available[family]}
+        selected[family] = []
+        for scene in ranked[family]:
+            log = common.scene_origin_log(scene)
+            if remaining[log] > 0:
+                remaining[log] -= 1
+                selected[family].append(scene)
+                used[log] += 1
+        if len(selected[family]) != per_family or any(remaining.values()):
+            raise RuntimeError("Joint source materialization disagrees with allocation")
+    if max(used.values()) > maximum_per_log:
+        raise RuntimeError("Joint source log cap violated")
+    details = dict(method="hash_greedy_residual_capacity_v1", per_family=per_family,
+                   maximum_per_log=maximum_per_log, augmentations=augmentations,
+                   selection_uses_outcomes_or_q=False,
+                   eligible_counts={f: len(ranked[f]) for f in families},
+                   independent_capacities={f: sum(min(maximum_per_log, n)
+                                                 for n in available[f].values()) for f in families},
+                   joint_capacity_upper_bound=sum(min(maximum_per_log, sum(available[f][log]
+                                                       for f in families)) for log in logs),
+                   legacy_greedy_counts={f: len(greedy[f]) for f in families},
+                   selected_counts={f: len(selected[f]) for f in families},
+                   removed_from_greedy={f: len(set(greedy[f]) - set(selected[f])) for f in families},
+                   actual_maximum_per_log=max(used.values()), selected_origin_logs=len(used))
+    return selected, details
+
+
 def source_pool(args):
     """Read only train shard membership; exclude previous diagnostic origin logs."""
     from prepare_selector_v4_causal_source import validate_split_contract, validate_scene_id
@@ -215,8 +321,7 @@ def source_pool(args):
     excluded = set(exclusion["excluded_origin_logs"])
     if len(excluded) < 15:
         raise RuntimeError("Missing prior diagnostic log exclusions")
-    pool, inventories = {}, []
-    per_log = Counter()
+    pool, inventories, candidates_by_family = {}, [], {}
     for family in common.ALLOWED_FAMILIES:
         index_path = args.source_root / "p2_shards_v1" / family / "index.json"
         index = json.loads(index_path.read_text())
@@ -240,19 +345,17 @@ def source_pool(args):
                         and int(content[scene].get("log_length", -1)) >= 20):
                     candidates[scene] = shard_path
             del content
-        selected = []
-        for scene in sorted(candidates, key=lambda s: common.stable_digest("cfpi-source-v1", family, s)):
-            log = common.scene_origin_log(scene)
-            if per_log[log] >= common.MAXIMUM_POOL_SCENES_PER_LOG:
-                continue
-            if scene in pool:
-                raise RuntimeError("Rare/common overlap")
-            selected.append(scene)
-            per_log[log] += 1
-            if len(selected) == 512:
-                break
-        if len(selected) != 512:
-            raise RuntimeError(f"Insufficient clean source for {family}: {len(selected)}")
+        candidates_by_family[family] = candidates
+        inventories.append({"family": family, "index": str(index_path),
+                            "index_sha256": common.sha256_file(index_path),
+                            "source_shards": shard_hashes})
+        print(json.dumps(dict(stage="source_inventory", family=family,
+                              eligible_count=len(candidates))), flush=True)
+    selection, selection_audit = select_source_joint(
+        candidates_by_family, common.TRAIN_POOL_PER_FAMILY, common.MAXIMUM_POOL_SCENES_PER_LOG)
+    print(json.dumps(dict(stage="source_allocation", **selection_audit)), flush=True)
+    for family in common.ALLOWED_FAMILIES:
+        candidates, selected = candidates_by_family[family], selection[family]
         grouped = defaultdict(list)
         for scene in selected:
             grouped[candidates[scene]].append(scene)
@@ -263,9 +366,6 @@ def source_pool(args):
                 materialized[scene] = common.annotate_scenario(content[scene], family, "train")
             del content
         pool.update({scene: materialized[scene] for scene in selected})
-        inventories.append({"family": family, "index": str(index_path),
-                            "index_sha256": common.sha256_file(index_path),
-                            "source_shards": shard_hashes})
     scenario_path = output / "train_pool_1024.pkl"
     common.atomic_pickle(scenario_path, pool)
     logs = {common.scene_origin_log(s) for s in pool}
@@ -276,7 +376,7 @@ def source_pool(args):
                  train_scenario_file=str(scenario_path.resolve()),
                  train_scenario_file_sha256=common.sha256_file(scenario_path),
                  train_origin_log_count=len(logs), excluded_origin_log_overlap=len(logs & excluded),
-                 origin_log_overlap=0, source_inventories=inventories,
+                 origin_log_overlap=0, source_inventories=inventories, source_selection=selection_audit,
                  exclusions=str(args.exclusions.resolve()),
                  exclusions_sha256=common.sha256_file(args.exclusions),
                  historical_exposure_status=exclusion["historical_exposure_status"],

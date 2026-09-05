@@ -29,6 +29,11 @@
 新 run ID、新 CFPI source/target/treatment/cache schema，不接受旧 V4 cache 训练。
 上游只读复用 V4 origin-log membership 与 train shards；只采集 original rare_union
 和 matched_common，各 512 场景，共 1024，跨两类合计每 origin log 最多 4 场景。
+2026-09-05 source 启动修复：两类配额采用联合容量分配。先复现原 hash-greedy
+选择；若单独顺序选择未满，使用确定性残量增广重新分配少量共享日志名额。
+日志内仍按原 scene hash 取样，不改变 family、不降低配额、不读取 outcome/Q。
+只有联合容量确实不可行才报源池不足。此修复发生在任何 baseline 采集之前，
+须使用新 run ID；旧失败记录与源码合同保留。
 `exclusions.json` 冻结排除历史 CCV 的 15 个 origin logs。历史 V3 训练/调参曝光不能
 自动视为不存在；本轮 CV 只对新增反馈训练 log-disjoint，不称全流程完全未见。
 任何 development/certification 必须另做全部历史来源曝光审计后再冻结。

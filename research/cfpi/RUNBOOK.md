@@ -27,8 +27,8 @@ SimEngine 默认解释器：
 节点路径不同时设置 DIFFUSIONDRIVE_SIMENGINE_PYTHON，不替换全局环境。
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash run_diffusiondrive_selector_cfpi_8h100.sh preflight cfpi_pilot_20260905
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash run_diffusiondrive_selector_cfpi_8h100.sh first_phase cfpi_pilot_20260905
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash run_diffusiondrive_selector_cfpi_8h100.sh preflight cfpi_pilot_20260905_r2 --gpus 8 --gpu-hours 143.8
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash run_diffusiondrive_selector_cfpi_8h100.sh first_phase cfpi_pilot_20260905_r2 --gpus 8 --gpu-hours 143.8
 ```
 
 first_phase 只执行 source → train A/B → freeze → sentinel → pilot64/repeat8 →
@@ -37,7 +37,9 @@ gate → CV → report；不提供 expand/dev/test/all 入口。
 可独立调用 source、baseline_train、freeze、sentinel、pilot、pilot_audit、train_cv、report。
 同一 run ID 可恢复已审计 collection 与每 25 步保存的训练状态。
 源码/协议/噪声/数据/拓扑改变时必须新 run ID，不能删除旧 contract 绕过检查。
-预算默认 --gpu-hours 144。达到预算不会自动续费或扩量，停止时保留进度。
+预算默认 --gpu-hours 144。原 run 在 source 阶段停止，账本已记 0.164984 GPUh；
+source 配额实现修复后改用 r2，并将剩余预算保守取为 143.8 GPUh，不重置总预算。
+达到预算不会自动续费或扩量，停止时保留进度。
 
 输出位于 experiments/diffusiondrive/selector_cfpi_v1/runs/RUN_ID/：
 run_contract.json、decision_ledger.json、preflight.json、source、targets、manifests、
@@ -62,3 +64,4 @@ materialize_selector_cfpi.py 导出完整 checkpoint 并核验非 selector 参�
 
 首轮实现、58 项 CPU 测试和真实硬件阻塞证据见
 [IMPLEMENTATION_HANDOFF_20260905.md](IMPLEMENTATION_HANDOFF_20260905.md)。
+首次 H100 启动与 source 修复说明见 [SOURCE_ALLOCATION_FIX_20260905.md](SOURCE_ALLOCATION_FIX_20260905.md)。
