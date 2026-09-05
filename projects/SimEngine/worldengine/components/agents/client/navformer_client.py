@@ -67,40 +67,14 @@ class NAVFormerClient(BaseClient):
         self.data_folder = Path(self.config["planner_client_folder"])
         self._traj_info = self.agent.object_track
 
-    def get_trajectory(self, step: int):
-        # for history frames, return log replay trajectory
-        if step < self.config['num_history'] - 1:
-            return Trajectory(
-                waypoints=self._traj_info[SD.POSITION][step : step + 9, :2],
-                velocities=self._traj_info["velocity"][step : step + 9],
-                headings=self._traj_info[SD.HEADING][step : step + 9],
-                angular_velocities=self._traj_info["angular_velocity"][step : step + 9],
+    def trajectory_from_local_plan(self, ego_traj):
+        """Convert one 10 Hz rear-axle-local plan into WorldEngine action data."""
+
+        ego_traj = np.asarray(ego_traj, dtype=np.float64)
+        if ego_traj.shape != (40, 3) or not np.isfinite(ego_traj).all():
+            raise ValueError(
+                f"NAVFormer local plan shape {ego_traj.shape} != (40, 3)"
             )
-
-        current_scene = self.engine.current_scene
-        parts = current_scene["id"].split("-")
-        if len(parts[-1]) == 3:
-            prefix = "-".join(
-                parts[-2:]
-            )  # for synthetic data, e.g. bb4f37403cea5b0e-001
-        else:
-            prefix = parts[-1]  # for original data, e.g. bb4f37403cea5b0e
-
-        traj_file_path = os.path.join(
-            self.config["planner_data_path"], f"{prefix}_{step + 1}.npy"
-        )
-
-        # Start waiting NAVFormer output
-        while not os.path.exists(traj_file_path):
-            time.sleep(0.2)
-
-        while True:
-            try:
-                ego_traj = np.load(traj_file_path)
-                break
-            except Exception:    # in case the file is not ready yet
-                time.sleep(0.1)
-
         ego_traj = np.concatenate([np.zeros((1, 3)), ego_traj], axis=0)
         ego_heading = ego_traj[:, 2]
         ego_xy = ego_traj[:, :2]
@@ -160,6 +134,42 @@ class NAVFormerClient(BaseClient):
             headings=local_heading[::5],
             angular_velocities=local_angular_velocities[::5],
         )
+
+    def get_trajectory(self, step: int):
+        # for history frames, return log replay trajectory
+        if step < self.config['num_history'] - 1:
+            return Trajectory(
+                waypoints=self._traj_info[SD.POSITION][step : step + 9, :2],
+                velocities=self._traj_info["velocity"][step : step + 9],
+                headings=self._traj_info[SD.HEADING][step : step + 9],
+                angular_velocities=self._traj_info["angular_velocity"][step : step + 9],
+            )
+
+        current_scene = self.engine.current_scene
+        parts = current_scene["id"].split("-")
+        if len(parts[-1]) == 3:
+            prefix = "-".join(
+                parts[-2:]
+            )  # for synthetic data, e.g. bb4f37403cea5b0e-001
+        else:
+            prefix = parts[-1]  # for original data, e.g. bb4f37403cea5b0e
+
+        traj_file_path = os.path.join(
+            self.config["planner_data_path"], f"{prefix}_{step + 1}.npy"
+        )
+
+        # Start waiting NAVFormer output
+        while not os.path.exists(traj_file_path):
+            time.sleep(0.2)
+
+        while True:
+            try:
+                ego_traj = np.load(traj_file_path)
+                break
+            except Exception:    # in case the file is not ready yet
+                time.sleep(0.1)
+
+        return self.trajectory_from_local_plan(ego_traj)
 
     def process_frame(self, frame_data, step: int):
         frame_data = self._postprocess_frame_data(frame_data)

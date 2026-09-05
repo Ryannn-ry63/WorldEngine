@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+
+HERE = Path(__file__).resolve()
+ALGENGINE = HERE.parents[1]
+SCRIPTS = ALGENGINE / "scripts/diffusiondrive"
+SIMENGINE = ALGENGINE.parent / "SimEngine"
+CONTRACT = SIMENGINE / "worldengine/manager/diffusiondrive_sidecar_contract.py"
+MANAGER = SIMENGINE / "worldengine/manager/diffusiondrive_dynamic_reward_manager.py"
+RUNNER = SCRIPTS / "run_selector_causal_branch_pilot_8hopper.sh"
+COMMON = SCRIPTS / "causal_branch_pilot_common.py"
+CONFIG = (
+    ALGENGINE
+    / "configs/diffusiondrive/e2e_diffusiondrive_grpo_selector_v3_causal_branch_pilot.py"
+)
+AUDITOR = SCRIPTS / "audit_selector_causal_branch_pilot_collection.py"
+
+
+def load_contract():
+    spec = importlib.util.spec_from_file_location(
+        "diffusiondrive_sidecar_contract_test", CONTRACT
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_resolves_reproduced_scene_identity_from_frozen_metadata():
+    contract = load_contract()
+    scene = {
+        "id": "2021.05.12.23.36.44_veh-35_00515_00701-fe7b785cae905905-002",
+        "token": (
+            "2021.05.12.23.36.44_veh-35_00515_00701-"
+            "fe7b785cae905905-intent_attack"
+        ),
+        "metadata": {"rollout_sidecar_prefix": "fe7b785cae905905-002"},
+    }
+    prefixes = contract.scene_sidecar_prefixes(scene)
+    assert prefixes[0] == "fe7b785cae905905-002"
+    assert prefixes.count("fe7b785cae905905-002") == 1
+    assert "002" in prefixes
+
+
+def test_derives_data_manager_identity_for_legacy_source():
+    contract = load_contract()
+    scene = {
+        "id": "log-name-origin123456789-007",
+        "token": "long-token-name",
+        "metadata": {},
+    }
+    assert contract.scene_sidecar_prefixes(scene)[0] == "origin123456789-007"
+
+
+def test_pipeline_smoke_and_consumer_wiring_are_present():
+    runner = RUNNER.read_text()
+    common = COMMON.read_text()
+    config = CONFIG.read_text()
+    manager = MANAGER.read_text()
+    auditor = AUDITOR.read_text()
+    assert "pipeline_smoke8_scenarios.pkl" in runner
+    assert "run_collection pipeline_smoke8 observe_only" in runner
+    assert '"pipeline_smoke8"' in common
+    assert '"pipeline_smoke8"' in config
+    assert "return scene_sidecar_prefixes(self.current_scene)" in manager
+    assert "if reference and" not in auditor

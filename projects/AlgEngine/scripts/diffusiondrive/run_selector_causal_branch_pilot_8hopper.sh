@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+# Train-only matched-control causal pilot for the frozen scalar V3 selector.
+set -Eeuo pipefail
+
+set +u
+PS1="${PS1:-selector-causal-branch-pilot}"
+. /inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/dotfiles/.bashrc
+set -u
+
+MODE="${1:-}"
+RUN_ID="${2:-causal_pilot_$(date -u +%Y%m%dT%H%M%SZ)}"
+case "${MODE}" in
+    prepare|preflight|plumbing|baselines|targets|smoke|formal|analyze|all) ;;
+    *)
+        echo "Usage: $0 {prepare|preflight|plumbing|baselines|targets|smoke|formal|analyze|all} [RUN_ID]" >&2
+        exit 2
+        ;;
+esac
+[[ "${RUN_ID}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid run id: ${RUN_ID}" >&2; exit 2; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export WORLDENGINE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+export SOURCE_WORLDENGINE_ROOT="${SELECTOR_CAUSAL_SOURCE_WORLDENGINE_ROOT:-/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine}"
+export SIMENGINE_ROOT="${WORLDENGINE_ROOT}/projects/SimEngine"
+export ALGENGINE_ROOT="${WORLDENGINE_ROOT}/projects/AlgEngine"
+export ALGENGINE_ENV="${DIFFUSIONDRIVE_ALGENGINE_ENV_OVERRIDE:-/inspire/hdd/global_user/wangcaojun-240208020180/miniconda3/envs/algengine}"
+export ALGENGINE_PYTHON="${ALGENGINE_ENV}/bin/python"
+export SIMENGINE_PYTHON="${DIFFUSIONDRIVE_SIMENGINE_PYTHON:-/root/miniconda3/envs/simengine/bin/python}"
+export PATH="${ALGENGINE_ENV}/bin:${PATH}"
+export DIFFUSIONDRIVE_ROOT=/inspire/hdd/global_user/wangcaojun-240208020180/nry/DiffusionDrive
+export MMCV_ROOT=/inspire/hdd/global_user/wangcaojun-240208020180/nry/mmcv
+export NUPLAN_DEVKIT_ROOT=/inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/repo-wcj/nuplan-devkit
+export SENIOR_NAVSIM_PARENT=/inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/repo-wcj/E2E/navsim_v1
+export H100_SUPPORT_DIR="${SIMENGINE_ROOT}/scripts/diffusiondrive"
+export DIFFUSIONDRIVE_BOOTSTRAP="${H100_SUPPORT_DIR}/algengine_worker_bootstrap"
+export WORLDENGINE_DIFFUSIONDRIVE_MMCV_BOOTSTRAP=1
+export WORLDENGINE_DIFFUSIONDRIVE_GSPLAT_BOOTSTRAP=1
+export WORLDENGINE_MMCV_EXTENSION="${SOURCE_WORLDENGINE_ROOT}/artifacts/toolchains/mmcv_sm89_sm90_v1/mmcv/_ext.so"
+export WORLDENGINE_GSPLAT_EXTENSION="${SOURCE_WORLDENGINE_ROOT}/artifacts/toolchains/gsplat_sm89_sm90_v1/gsplat/csrc.so"
+export PYTHONPATH="${DIFFUSIONDRIVE_BOOTSTRAP}:${H100_SUPPORT_DIR}:${ALGENGINE_ROOT}:${SIMENGINE_ROOT}:${DIFFUSIONDRIVE_ROOT}:${MMCV_ROOT}:${NUPLAN_DEVKIT_ROOT}:${SENIOR_NAVSIM_PARENT}:${SCRIPT_DIR}:${PYTHONPATH:-}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+
+CONFIG="${ALGENGINE_ROOT}/configs/diffusiondrive/e2e_diffusiondrive_grpo_selector_v3_causal_branch_pilot.py"
+SOURCE_AUDIT="${SOURCE_WORLDENGINE_ROOT}/experiments/grpo_sources/diffusiondrive_selector_rare_rollout_bwm_v1/scenarios/bwm_scenario_audit.json"
+ASSET_ROOT="${SOURCE_WORLDENGINE_ROOT}/data/sim_engine/assets/navtrain/assets"
+EXPERIMENT_ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/selector_causal_branch_pilot_v1"
+RUN_ROOT="${EXPERIMENT_ROOT}/runs/${RUN_ID}"
+SOURCE_ROOT="${RUN_ROOT}/source"
+PREPARED_SOURCE_AUDIT="${SOURCE_ROOT}/source_audit.json"
+SCENARIO_FILE="${SOURCE_ROOT}/train_only_147_scenarios.pkl"
+PIPELINE_SMOKE_SCENARIO_FILE="${SOURCE_ROOT}/pipeline_smoke8_scenarios.pkl"
+TARGET_ROOT="${RUN_ROOT}/targets"
+TARGET_MANIFEST="${TARGET_ROOT}/target_manifest.json"
+GATE_REPORT="${RUN_ROOT}/causal_gate.json"
+PROTOCOL="${WORLDENGINE_ROOT}/DIFFUSIONDRIVE_SELECTOR_CAUSAL_BRANCH_PILOT_PROTOCOL_20260903.md"
+
+RUNNER_SCRIPT="${SCRIPT_DIR}/run_selector_causal_branch_pilot_8hopper.sh"
+PREPARER="${SCRIPT_DIR}/prepare_selector_causal_branch_pilot.py"
+BUILDER="${SCRIPT_DIR}/build_selector_causal_branch_pilot_targets.py"
+AUDITOR="${SCRIPT_DIR}/audit_selector_causal_branch_pilot_collection.py"
+ANALYZER="${SCRIPT_DIR}/analyze_selector_causal_branch_pilot.py"
+CAUSAL_COMMON="${SCRIPT_DIR}/causal_branch_pilot_common.py"
+R15_COMMON="${SCRIPT_DIR}/oracle_r15_common.py"
+SIM_TEST="${ALGENGINE_ROOT}/closed_loop/sim_test.py"
+PLANNING_HEAD="${ALGENGINE_ROOT}/mmdet3d_plugin/navformer/dense_heads/diffusion_grpo_online_planning_head.py"
+SCENE_SELECTOR="${ALGENGINE_ROOT}/mmdet3d_plugin/navformer/dense_heads/diffusion_grpo_scene_selector.py"
+NAVFORMER="${ALGENGINE_ROOT}/mmdet3d_plugin/navformer/detectors/navformer.py"
+NAVFORMER_CLIENT="${SIMENGINE_ROOT}/worldengine/components/agents/client/navformer_client.py"
+PREACTION_MANAGER="${SIMENGINE_ROOT}/worldengine/manager/diffusiondrive_preaction_oracle_manager.py"
+DYNAMIC_MANAGER="${SIMENGINE_ROOT}/worldengine/manager/diffusiondrive_dynamic_reward_manager.py"
+SIDECAR_CONTRACT="${SIMENGINE_ROOT}/worldengine/manager/diffusiondrive_sidecar_contract.py"
+BASE_ENV="${SIMENGINE_ROOT}/worldengine/envs/base_env.py"
+DEFAULT_RUNNER="${SIMENGINE_ROOT}/worldengine/configs/default_runner.yaml"
+MERGE_RESULTS="${SIMENGINE_ROOT}/scripts/merge_simulation_results.py"
+
+require_file() { [[ -f "$1" ]] || { echo "Missing required file: $1" >&2; exit 1; }; }
+json_value() {
+    "${ALGENGINE_PYTHON}" -c 'import json,sys; value=json.load(open(sys.argv[1]));
+for key in sys.argv[2].split("."): value=value[key]
+print(value)' "$1" "$2"
+}
+manifest_path() {
+    echo "${SOURCE_WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/models/rare_tuned/seed0/checkpoint_manifest.json"
+}
+
+static_preflight() {
+    local required=("${ALGENGINE_PYTHON}" "${SIMENGINE_PYTHON}" "${CONFIG}" "${SOURCE_AUDIT}" "${RUNNER_SCRIPT}" "${PREPARER}" "${BUILDER}" "${AUDITOR}" "${ANALYZER}" "${CAUSAL_COMMON}" "${R15_COMMON}" "${SIM_TEST}" "${PLANNING_HEAD}" "${SCENE_SELECTOR}" "${NAVFORMER}" "${NAVFORMER_CLIENT}" "${PREACTION_MANAGER}" "${DYNAMIC_MANAGER}" "${SIDECAR_CONTRACT}" "${BASE_ENV}" "${DEFAULT_RUNNER}" "${MERGE_RESULTS}" "${PROTOCOL}" "${WORLDENGINE_MMCV_EXTENSION}" "${WORLDENGINE_GSPLAT_EXTENSION}" "$(manifest_path)")
+    local path
+    for path in "${required[@]}"; do require_file "${path}"; done
+    [[ -d "${ASSET_ROOT}" ]] || { echo "Missing asset root: ${ASSET_ROOT}" >&2; exit 1; }
+    mkdir -p "${RUN_ROOT}"
+}
+
+prepare_source() {
+    if [[ ! -f "${PREPARED_SOURCE_AUDIT}" ]]; then
+        "${ALGENGINE_PYTHON}" "${PREPARER}" --source-audit "${SOURCE_AUDIT}" --output-root "${SOURCE_ROOT}"
+    fi
+    require_file "${PREPARED_SOURCE_AUDIT}"
+    require_file "${SCENARIO_FILE}"
+    require_file "${PIPELINE_SMOKE_SCENARIO_FILE}"
+    "${ALGENGINE_PYTHON}" -c 'import hashlib,json,sys
+def sha(path):
+ d=hashlib.sha256()
+ with open(path,"rb") as f:
+  for chunk in iter(lambda:f.read(8*1024*1024),b""): d.update(chunk)
+ return d.hexdigest()
+r=json.load(open(sys.argv[1]))
+assert r["status"]=="PASS" and r["method"]=="diffusiondrive_selector_causal_branch_pilot_source_v1"
+assert r["num_scenarios"]==147 and r["navtest_overlap_logs"]==0 and r["navtest_overlap_tokens"]==0
+assert r["pipeline_smoke_scenario_count"]==8 and len(r["pipeline_smoke_scene_ids"])==8
+assert sha(r["scenario_file"])==r["scenario_file_sha256"]
+assert sha(r["pipeline_smoke_scenario_file"])==r["pipeline_smoke_scenario_file_sha256"]
+assert sha(r["source_audit"])==r["source_audit_sha256"]' "${PREPARED_SOURCE_AUDIT}"
+}
+
+hopper_preflight() {
+    "${ALGENGINE_PYTHON}" - <<'PY'
+import json,torch
+names=[torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
+if len(names)!=8: raise RuntimeError(f"expected 8 visible GPUs, got {len(names)}")
+if any(not any(x in name.upper() for x in ("H100","H200")) for name in names): raise RuntimeError(f"requires Hopper, got {names}")
+if any(torch.cuda.get_device_capability(i)!=(9,0) for i in range(8)): raise RuntimeError("requires sm_90")
+if str(torch.__version__)!="2.0.1+cu118" or torch.version.cuda!="11.8": raise RuntimeError(f"environment drift: {torch.__version__}/{torch.version.cuda}")
+print(json.dumps({"status":"PASS","hardware_contract":"hopper8","devices":names,"torch":torch.__version__},sort_keys=True))
+PY
+    "${ALGENGINE_PYTHON}" "${H100_SUPPORT_DIR}/preflight_mmcv_cuda.py" --extension "${WORLDENGINE_MMCV_EXTENSION}" --expected-capability sm_90 --all-visible
+    "${SIMENGINE_PYTHON}" "${H100_SUPPORT_DIR}/preflight_gsplat_cuda.py" --extension "${WORLDENGINE_GSPLAT_EXTENSION}" --expected-capability sm_90 --ray-workers 8
+}
+
+prepare_environment() {
+    local phase="$1" mode="$2" target_sha="$3" manifest checkpoint
+    manifest="$(manifest_path)"
+    checkpoint="$(json_value "${manifest}" checkpoint)"
+    require_file "${checkpoint}"
+    export DIFFUSIONDRIVE_BEHAVIOR_POLICY_TRAIN_SEED=0
+    export DIFFUSIONDRIVE_CAUSAL_BRANCH_PHASE="${phase}"
+    export DIFFUSIONDRIVE_CAUSAL_BRANCH_MODE="${mode}"
+    export DIFFUSIONDRIVE_CAUSAL_BRANCH_TARGET_MANIFEST_SHA256="${target_sha}"
+    export DIFFUSIONDRIVE_BEHAVIOR_CHECKPOINT_SHA256="$(json_value "${manifest}" checkpoint_sha256)"
+    export DIFFUSIONDRIVE_BEHAVIOR_CHECKPOINT_MANIFEST_SHA256="$(sha256sum "${manifest}" | awk '{print $1}')"
+    [[ "$(sha256sum "${checkpoint}" | awk '{print $1}')" == "${DIFFUSIONDRIVE_BEHAVIOR_CHECKPOINT_SHA256}" ]] || { echo "Checkpoint SHA256 drifted" >&2; exit 1; }
+    export DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE=selector_causal_branch_pilot_evalnoise0
+    export DIFFUSIONDRIVE_ROLLOUT_IMPLEMENTATION_SHA256="$({ sha256sum "${SIM_TEST}" "${NAVFORMER_CLIENT}" "${PREACTION_MANAGER}" "${DYNAMIC_MANAGER}" "${SIDECAR_CONTRACT}" "${BASE_ENV}" "${DEFAULT_RUNNER}" "${R15_COMMON}"; } | sha256sum | awk '{print $1}')"
+    export DIFFUSIONDRIVE_ROLLOUT_CODE_SHA="$({ sha256sum "${RUNNER_SCRIPT}" "${CONFIG}" "${SIM_TEST}" "${PLANNING_HEAD}" "${SCENE_SELECTOR}" "${NAVFORMER}" "${NAVFORMER_CLIENT}" "${PREACTION_MANAGER}" "${DYNAMIC_MANAGER}" "${SIDECAR_CONTRACT}" "${BASE_ENV}" "${DEFAULT_RUNNER}" "${MERGE_RESULTS}" "${R15_COMMON}" "${CAUSAL_COMMON}" "${AUDITOR}"; } | sha256sum | awk '{print $1}')"
+    POLICY_MANIFEST="${manifest}"
+    POLICY_CHECKPOINT="${checkpoint}"
+}
+
+verify_audit() {
+    "${ALGENGINE_PYTHON}" -c 'import json,os,sys
+r=json.load(open(sys.argv[1]))
+assert r["status"]=="PASS" and r["method"]=="diffusiondrive_selector_causal_branch_pilot_collection_audit_v1" and r["layout"]=="merged"
+assert r["diagnostic_split"]==sys.argv[2] and r["oracle_intervention_mode"]==sys.argv[3]
+assert r["behavior_policy_train_seed"]==0 and r["target_manifest_sha256"]==sys.argv[4]
+assert r["code_sha"]==os.environ["DIFFUSIONDRIVE_ROLLOUT_CODE_SHA"]
+assert r["rollout_implementation_sha256"]==os.environ["DIFFUSIONDRIVE_ROLLOUT_IMPLEMENTATION_SHA256"]
+assert r["closed_loop_outcome"] is not None' "$1" "$2" "$3" "$4"
+}
+
+verify_targets() {
+    require_file "${TARGET_MANIFEST}"
+    "${ALGENGINE_PYTHON}" -c 'import hashlib,json,sys
+
+def sha(path):
+ d=hashlib.sha256()
+ with open(path,"rb") as f:
+  for chunk in iter(lambda:f.read(8*1024*1024),b""): d.update(chunk)
+ return d.hexdigest()
+
+r=json.load(open(sys.argv[1]))
+assert r["status"]=="PASS" and r["method"]=="diffusiondrive_selector_causal_branch_pilot_targets_v1"
+assert r["schema_version"]==2 and r["design_version"]=="causal_branch_pilot_v2"
+assert r["intervention_outcomes_observed_before_freeze"] is False
+assert r["primary_estimand"]=="one_step_local_oracle_minus_no_intervention_v3_baseline"
+assert r["specificity_estimand"]=="one_step_local_oracle_minus_magnitude_matched_nonimproving_control"
+for key in ("source_scenario_file","baseline_audit_a","baseline_audit_b","formal_scenario_file","smoke_scenario_file"):
+ assert sha(r[key])==r[key+"_sha256"]
+for path_key,sha_key in (("protocol_file","protocol_file_sha256"),("target_builder_file","target_builder_sha256"),("common_helpers_file","common_helpers_sha256")):
+ assert sha(r[path_key])==r[sha_key]
+match=r["matching_contract"]
+assert match["metric"]=="policy_relative_xy_ade_magnitude"
+assert match["interpretation"]=="treatment_magnitude_match_not_directional_geometry_match"
+assert match["maximum_absolute_ade_error_m"]==0.5 and match["maximum_relative_ade_error"]==0.5
+assert r["target_count"]==r["formal_scenario_count"]==len(r["targets"])
+assert set(r["smoke_scene_ids"]) <= {x["scene_id"] for x in r["targets"]}
+for row in r["targets"]:
+ assert row["ade_match_error"] <= 0.5 + 1e-8
+ assert row["relative_ade_match_error"] <= 0.5 + 1e-8' "${TARGET_MANIFEST}"
+}
+
+run_collection() {
+    local phase="$1" mode="$2" scenario_file="$3" target_manifest="${4:-}"
+    local target_sha=none
+    if [[ -n "${target_manifest}" ]]; then
+        require_file "${target_manifest}"
+        target_sha="$(sha256sum "${target_manifest}" | awk '{print $1}')"
+    fi
+    prepare_environment "${phase}" "${mode}" "${target_sha}"
+    local root="${RUN_ROOT}/${phase}/${mode}"
+    local final_audit="${root}/collection_audit.json"
+    if [[ -f "${final_audit}" ]]; then
+        verify_audit "${final_audit}" "${phase}" "${mode}" "${target_sha}"
+        echo "SKIP verified ${phase} ${mode}: ${final_audit}"
+        return 0
+    fi
+    mkdir -p "${root}/logs"
+    find "${root}" -name simulation_completed.flag -type f -delete
+    local target_we_args=() target_audit_args=()
+    if [[ -n "${target_manifest}" ]]; then
+        target_we_args=(diffusiondrive_oracle_target_manifest="${target_manifest}" diffusiondrive_oracle_target_manifest_sha256="${target_sha}")
+        target_audit_args=(--target-manifest "${target_manifest}")
+    fi
+
+    "${ALGENGINE_PYTHON}" -c 'from mmcv import Config; import sys
+c=Config.fromfile(sys.argv[1]); x=c.selector_rollout_contract
+assert c.model.planning_head.export_rollout_context and c.model.planning_head.online_reward is None
+assert x.schema_version==7 and x.train_only and x.diagnostic_only and not x.training_data_consumed
+assert x.action_score_timing=="pre_action" and x.oracle_intervention_mode==sys.argv[2]
+assert x.primary_causal_estimand=="one_step_local_oracle_minus_no_intervention_v3_baseline"
+assert x.specificity_causal_estimand=="one_step_local_oracle_minus_magnitude_matched_nonimproving_control"
+assert x.matched_control_match_metric=="policy_relative_xy_ade_magnitude"
+assert x.matched_control_max_absolute_ade_error_m==0.5 and x.matched_control_max_relative_ade_error==0.5' "${CONFIG}" "${mode}"
+
+    local we_pid="" failure=0 planner_pids=()
+    cleanup_collection() {
+        trap - EXIT INT TERM
+        local pid
+        for pid in "${planner_pids[@]:-}"; do kill "${pid}" 2>/dev/null || true; done
+        [[ -z "${we_pid}" ]] || kill "${we_pid}" 2>/dev/null || true
+    }
+    trap cleanup_collection EXIT INT TERM
+    cd "${SIMENGINE_ROOT}"
+    "${SIMENGINE_PYTHON}" worldengine/runner/run_simulation.py         debug_mode=True debug_scene_name=null data_file_path="${scenario_file}" asset_folder_path="${ASSET_ROOT}"         output_dir="${root}/__WORKER_ID__/WE_output" job_name="selector_causal_${phase}_${mode}"         use_planner_actions=true ego_policy=env_input_policy ego_client=navformer_client ego_controller=log_play_controller ego_navigation=trajectory_navigation         agent_policy=idm_policy agent_navigation=idm_navigation planner_data_path="${root}/__WORKER_ID__/plan_traj" planner_client_folder="${root}/__WORKER_ID__/frames"         with_metric_manager=true with_dense_reward_manager=true diffusiondrive_preaction_oracle=true diffusiondrive_dynamic_candidate_reward=false         diffusiondrive_preaction_mode="${mode}" diffusiondrive_behavior_train_seed=0         diffusiondrive_candidate_sidecar_path="${root}/__WORKER_ID__/diffusiondrive_candidate_sidecars" diffusiondrive_sidecar_timeout_s=300         distributed_mode=SCENARIO_BASED worker=ray_distributed worker_id_prefix=split_ enable_resume=true completed_scenarios_dir="${root}/__WORKER_ID__/completed_scenarios"         "${target_we_args[@]}" >"${root}/logs/worldengine.log" 2>&1 &
+    we_pid=$!
+    sleep 30
+
+    run_planner() {
+        local split_id="$1" worker_root="${root}/split_$1"
+        mkdir -p "${worker_root}/plan_traj" "${worker_root}/frames" "${worker_root}/merged_ann_files" "${worker_root}/diffusiondrive_candidate_sidecars"
+        cd "${ALGENGINE_ROOT}"
+        CUDA_VISIBLE_DEVICES="${split_id}" "${ALGENGINE_PYTHON}" closed_loop/sim_test.py "${CONFIG}" "${POLICY_CHECKPOINT}" --seed 0 --log-dir "${worker_root}"             --cfg-options sim.monitored_folder="${worker_root}/frames" sim.plan_save_path="${worker_root}/plan_traj" sim.merged_ann_save_dir="${worker_root}/merged_ann_files"             sim.diffusiondrive_rollout_sidecar_path="${worker_root}/diffusiondrive_candidate_sidecars" sim.clean_temp_files=False sim.clean_record_data=False data_root="${worker_root}/WE_output/openscene_format/"             >"${root}/logs/planner_split${split_id}.log" 2>&1
+    }
+    local split_id
+    for split_id in 0 1 2 3 4 5 6 7; do run_planner "${split_id}" & planner_pids+=("$!"); done
+    local pid
+    for pid in "${planner_pids[@]}"; do wait "${pid}" || failure=1; done
+    wait "${we_pid}" || failure=1
+    we_pid=""; planner_pids=(); trap - EXIT INT TERM
+    if [[ "${failure}" -ne 0 ]]; then
+        echo "FAIL collection ${phase} ${mode}; rerun the same stage and RUN_ID to resume" >&2
+        tail -80 "${root}/logs/worldengine.log" >&2 || true
+        exit 1
+    fi
+
+    local audit_common=(--rollout-root "${root}" --scenario-file "${scenario_file}" --checkpoint-manifest "${POLICY_MANIFEST}" --train-seed 0 --phase "${phase}" --mode "${mode}"         --expected-noise-namespace "${DIFFUSIONDRIVE_ROLLOUT_NOISE_NAMESPACE}" --expected-implementation-sha256 "${DIFFUSIONDRIVE_ROLLOUT_IMPLEMENTATION_SHA256}" --expected-code-sha "${DIFFUSIONDRIVE_ROLLOUT_CODE_SHA}" --expected-workers 8 "${target_audit_args[@]}")
+    "${ALGENGINE_PYTHON}" "${AUDITOR}" "${audit_common[@]}" --layout split --output "${root}/premerge_collection_audit.json"
+    cd "${SIMENGINE_ROOT}"
+    "${SIMENGINE_PYTHON}" scripts/merge_simulation_results.py --test_path "${root}" --react_type R --num-splits 8
+    local metrics="${root}/WE_output/openscene_format/all_scenes_pdm_averages_R.csv"
+    require_file "${metrics}"
+    "${ALGENGINE_PYTHON}" "${AUDITOR}" "${audit_common[@]}" --layout merged --metrics-csv "${metrics}" --output "${final_audit}"
+    echo "PASS ${phase} ${mode}: ${final_audit}"
+}
+
+run_pipeline_smoke() {
+    run_collection pipeline_smoke8 observe_only "${PIPELINE_SMOKE_SCENARIO_FILE}"
+}
+
+verify_frozen_baselines() {
+    "${ALGENGINE_PYTHON}" -c 'import hashlib,json,sys
+
+def sha(path):
+ d=hashlib.sha256()
+ with open(path,"rb") as f:
+  for chunk in iter(lambda:f.read(8*1024*1024),b""): d.update(chunk)
+ return d.hexdigest()
+
+a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2])); source_sha=sha(sys.argv[3])
+for row,phase in ((a,"baseline_a"),(b,"baseline_b")):
+ assert row["status"]=="PASS" and row["method"]=="diffusiondrive_selector_causal_branch_pilot_collection_audit_v1"
+ assert row["layout"]=="merged" and row["diagnostic_split"]==phase and row["oracle_intervention_mode"]=="observe_only"
+ assert row["num_scenarios"]==147 and row["num_records"]==1176 and row["scenario_file_sha256"]==source_sha
+ assert sha(row["closed_loop_outcome"]["metrics_csv"])==row["closed_loop_outcome"]["metrics_csv_sha256"]
+assert a["checkpoint_sha256"]==b["checkpoint_sha256"]
+assert a["candidate_noise_namespace"]==b["candidate_noise_namespace"]
+assert a["rollout_implementation_sha256"]==b["rollout_implementation_sha256"]
+assert a["closed_loop_outcome"]["metrics_csv_sha256"]==b["closed_loop_outcome"]["metrics_csv_sha256"]' \
+        "${RUN_ROOT}/baseline_a/observe_only/collection_audit.json" \
+        "${RUN_ROOT}/baseline_b/observe_only/collection_audit.json" \
+        "${SCENARIO_FILE}"
+}
+
+run_baselines() {
+    local audit_a="${RUN_ROOT}/baseline_a/observe_only/collection_audit.json"
+    local audit_b="${RUN_ROOT}/baseline_b/observe_only/collection_audit.json"
+    if [[ -f "${audit_a}" && -f "${audit_b}" ]]; then
+        verify_frozen_baselines
+        echo "SKIP verified immutable baseline A/B: ${RUN_ROOT}"
+        return 0
+    fi
+    if [[ -f "${audit_a}" || -f "${audit_b}" ]]; then
+        echo "Partial baseline pair exists; do not mix contracts in one immutable run ID" >&2
+        exit 1
+    fi
+    run_collection baseline_a observe_only "${SCENARIO_FILE}"
+    run_collection baseline_b observe_only "${SCENARIO_FILE}"
+}
+
+build_targets() {
+    require_file "${RUN_ROOT}/baseline_a/observe_only/collection_audit.json"
+    require_file "${RUN_ROOT}/baseline_b/observe_only/collection_audit.json"
+    if [[ ! -f "${TARGET_MANIFEST}" ]]; then
+        mkdir -p "${TARGET_ROOT}"
+        "${ALGENGINE_PYTHON}" "${BUILDER}" \
+            --baseline-audit-a "${RUN_ROOT}/baseline_a/observe_only/collection_audit.json" \
+            --baseline-audit-b "${RUN_ROOT}/baseline_b/observe_only/collection_audit.json" \
+            --source-scenarios "${SCENARIO_FILE}" --output-root "${TARGET_ROOT}" \
+            --protocol "${PROTOCOL}" --headroom-threshold 0.02 \
+            --matched-reward-ceiling 0.005 \
+            --matched-max-absolute-error-m 0.5 \
+            --matched-max-relative-error 0.5
+    fi
+    verify_targets
+    echo "PASS frozen causal-pilot targets: ${TARGET_MANIFEST}"
+}
+
+run_smoke() {
+    verify_targets
+    local count scenario
+    count="$(json_value "${TARGET_MANIFEST}" smoke_scenario_count)"
+    [[ "${count}" -eq 8 ]] || { echo "INSUFFICIENT_CAUSAL_BRANCH_COVERAGE: smoke requires 4 failed + 4 solved targets, got ${count}" >&2; exit 3; }
+    scenario="$(json_value "${TARGET_MANIFEST}" smoke_scenario_file)"
+    run_collection intervention_smoke8 one_shot_oracle "${scenario}" "${TARGET_MANIFEST}"
+    run_collection intervention_smoke8 one_shot_matched "${scenario}" "${TARGET_MANIFEST}"
+}
+
+run_formal() {
+    verify_targets
+    local failed solved failed_logs solved_logs scenario
+    failed="$(json_value "${TARGET_MANIFEST}" selected.failed.count)"
+    solved="$(json_value "${TARGET_MANIFEST}" selected.solved.count)"
+    failed_logs="$(json_value "${TARGET_MANIFEST}" selected.failed.origin_log_count)"
+    solved_logs="$(json_value "${TARGET_MANIFEST}" selected.solved.origin_log_count)"
+    [[ "${failed}" -ge 8 && "${solved}" -ge 8 && "${failed_logs}" -ge 6 && "${solved_logs}" -ge 6 ]] || { echo "INSUFFICIENT_CAUSAL_BRANCH_COVERAGE: failed=${failed}/${failed_logs}logs solved=${solved}/${solved_logs}logs" >&2; exit 3; }
+    scenario="$(json_value "${TARGET_MANIFEST}" formal_scenario_file)"
+    run_collection intervention_target one_shot_oracle "${scenario}" "${TARGET_MANIFEST}"
+    run_collection intervention_target one_shot_matched "${scenario}" "${TARGET_MANIFEST}"
+}
+
+run_analysis() {
+    verify_targets
+    local args=(
+        --target-manifest "${TARGET_MANIFEST}"
+        --baseline-audit-a "${RUN_ROOT}/baseline_a/observe_only/collection_audit.json"
+        --baseline-audit-b "${RUN_ROOT}/baseline_b/observe_only/collection_audit.json"
+        --smoke-oracle-audit "${RUN_ROOT}/intervention_smoke8/one_shot_oracle/collection_audit.json"
+        --smoke-matched-audit "${RUN_ROOT}/intervention_smoke8/one_shot_matched/collection_audit.json"
+        --formal-oracle-audit "${RUN_ROOT}/intervention_target/one_shot_oracle/collection_audit.json"
+        --formal-matched-audit "${RUN_ROOT}/intervention_target/one_shot_matched/collection_audit.json"
+        --bootstrap-repetitions 10000 --bootstrap-seed 20260903
+        --output "${GATE_REPORT}"
+    )
+    if [[ -f "${GATE_REPORT}" ]]; then
+        "${ALGENGINE_PYTHON}" -c 'import hashlib,json,sys
+def sha(path):
+ d=hashlib.sha256()
+ with open(path,"rb") as f:
+  for chunk in iter(lambda:f.read(8*1024*1024),b""): d.update(chunk)
+ return d.hexdigest()
+r=json.load(open(sys.argv[1]))
+assert r["status"]=="PASS" and r["method"]=="diffusiondrive_selector_causal_branch_pilot_gate_v2" and r["schema_version"]==2
+assert sha(r["target_manifest"])==r["target_manifest_sha256"]
+assert sha(sys.argv[2])==r["analyzer_sha256"] and sha(sys.argv[3])==r["common_helpers_sha256"]
+for row in r["audits"].values(): assert sha(row["path"])==row["sha256"]' "${GATE_REPORT}" "${ANALYZER}" "${CAUSAL_COMMON}"
+        echo "SKIP verified causal gate: ${GATE_REPORT}"
+        return
+    fi
+    "${ALGENGINE_PYTHON}" "${ANALYZER}" "${args[@]}"
+}
+
+static_preflight
+prepare_source
+case "${MODE}" in
+    prepare) echo "PASS causal-pilot source preparation: ${PREPARED_SOURCE_AUDIT}" ;;
+    preflight) hopper_preflight; echo "PASS selector causal-branch pilot preflight" ;;
+    plumbing) hopper_preflight; run_pipeline_smoke ;;
+    baselines) hopper_preflight; run_baselines ;;
+    targets) build_targets ;;
+    smoke) hopper_preflight; run_smoke ;;
+    formal) hopper_preflight; run_formal ;;
+    analyze) run_analysis ;;
+    all) hopper_preflight; run_baselines; build_targets; run_smoke; run_formal; run_analysis ;;
+esac
+

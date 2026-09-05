@@ -340,7 +340,33 @@ class BaseEnv:
         if self.config.with_metric_manager:
             self.engine.register_manager('metric_manager', MetricManager())
         if self.config.with_dense_reward_manager:
-            if self.config.get('diffusiondrive_dynamic_candidate_reward', False):
+            diagnostic_managers = (
+                bool(self.config.get('diffusiondrive_candidate_sweep', False)),
+                bool(self.config.get('diffusiondrive_preaction_oracle', False)),
+                bool(self.config.get('diffusiondrive_v4_causal_cache', False)),
+            )
+            if sum(diagnostic_managers) > 1:
+                raise ValueError(
+                    "CCV, pre-action oracle and V4 causal-cache managers are mutually exclusive"
+                )
+            if self.config.get('diffusiondrive_v4_causal_cache', False):
+                from worldengine.manager.diffusiondrive_v4_causal_cache_manager import (
+                    DiffusionDriveV4CausalCacheManager,
+                )
+                reward_manager = DiffusionDriveV4CausalCacheManager()
+            elif self.config.get('diffusiondrive_candidate_sweep', False):
+                from worldengine.manager.diffusiondrive_candidate_sweep_manager import (
+                    DiffusionDriveCandidateSweepManager,
+                )
+                reward_manager = DiffusionDriveCandidateSweepManager()
+            elif self.config.get('diffusiondrive_preaction_oracle', False):
+                # R1.5 is isolated behind an opt-in flag because it may replace
+                # engine.external_actions during manager.before_step.
+                from worldengine.manager.diffusiondrive_preaction_oracle_manager import (
+                    DiffusionDrivePreActionOracleManager,
+                )
+                reward_manager = DiffusionDrivePreActionOracleManager()
+            elif self.config.get('diffusiondrive_dynamic_candidate_reward', False):
                 # Lazy import keeps every non-DiffusionDrive algorithm on the
                 # exact original import/registration path.
                 from worldengine.manager.diffusiondrive_dynamic_reward_manager import (

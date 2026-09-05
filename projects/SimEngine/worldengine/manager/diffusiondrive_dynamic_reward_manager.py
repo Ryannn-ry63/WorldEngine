@@ -54,6 +54,9 @@ from worldengine.components.agents.policy.pdm_planner.observation.pdm_occupancy_
 )
 from worldengine.manager.base_manager import BaseManager
 from worldengine.manager.dense_reward_manager import DenseRewardManager
+from worldengine.manager.diffusiondrive_sidecar_contract import (
+    scene_sidecar_prefixes,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -204,13 +207,7 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
         self.use_cuda = torch.cuda.is_available()
 
     def _scene_prefixes(self):
-        values = []
-        for key in ("id", "token"):
-            value = self.current_scene.get(key)
-            if value:
-                value = str(value)
-                values.extend((value, value.rsplit("-", 1)[-1]))
-        return tuple(dict.fromkeys(values))
+        return scene_sidecar_prefixes(self.current_scene)
 
     def _load_sidecar(self):
         root = Path(
@@ -239,6 +236,11 @@ class DiffusionDriveDynamicRewardManager(DenseRewardManager):
                         raise RuntimeError(f"sidecar type drifted: {matches[0]}")
                     if int(payload.get("planner_step", -1)) != planner_step:
                         raise RuntimeError(f"sidecar planner step drifted: {matches[0]}")
+                    filename_prefix = matches[0].name.rsplit("_", 1)[0]
+                    if str(payload.get("scene_prefix")) != filename_prefix:
+                        raise RuntimeError(
+                            f"sidecar scene identity drifted: {matches[0]}"
+                        )
                     return payload, matches[0]
                 if len(matches) > 1:
                     raise RuntimeError(f"ambiguous DiffusionDrive sidecars: {matches}")

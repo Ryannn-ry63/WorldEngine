@@ -171,8 +171,12 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
             else None
         )
         self._active_sample_tokens = None
+        self._active_frozen_track_context = None
         self._candidate_noise_namespace = candidate_noise_namespace
         self.export_rollout_context = bool(export_rollout_context)
+        self.requires_frozen_track_states = bool(
+            getattr(self.scene_selector, "requires_frozen_track_states", False)
+        )
 
         self._freeze_generator_and_open_selector()
         self.train(self.training)
@@ -336,8 +340,35 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
         gt_pre_command_sdc=None,
         navigation_goal=None,
         sample_tokens: Optional[Sequence[str]] = None,
+        frozen_track_states: Optional[torch.Tensor] = None,
+        frozen_track_classes: Optional[torch.Tensor] = None,
+        frozen_track_mask: Optional[torch.Tensor] = None,
     ):
+        frozen_values = (
+            frozen_track_states,
+            frozen_track_classes,
+            frozen_track_mask,
+        )
+        if self.requires_frozen_track_states and any(
+            value is None for value in frozen_values
+        ):
+            raise ValueError(
+                "interaction selector requires frozen track states/classes/mask"
+            )
+        if not self.requires_frozen_track_states and any(
+            value is not None for value in frozen_values
+        ):
+            raise ValueError("frozen track inputs supplied to a non-interaction selector")
         self._active_sample_tokens = sample_tokens
+        self._active_frozen_track_context = (
+            {
+                "frozen_track_states": frozen_track_states.detach(),
+                "frozen_track_classes": frozen_track_classes.detach(),
+                "frozen_track_mask": frozen_track_mask.detach(),
+            }
+            if self.requires_frozen_track_states
+            else None
+        )
         try:
             return super().forward(
                 bev_embed.detach(),
@@ -350,6 +381,7 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
             )
         finally:
             self._active_sample_tokens = None
+            self._active_frozen_track_context = None
 
     def _all_candidates_to_40(self, candidates_8):
         batch_size, num_candidates, num_poses, pose_dim = candidates_8.shape
@@ -442,12 +474,17 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
             bev_range_x=cross_bev_attention.bev_range_x,
             bev_range_y=cross_bev_attention.bev_range_y,
         )
-        return {
+        context = {
             "route_bev_features": route_bev_features,
             "status_token": status_token.detach(),
             "ego_query": ego_query.detach(),
             "agents_query": agents_query.detach(),
         }
+        if self.requires_frozen_track_states:
+            if self._active_frozen_track_context is None:
+                raise RuntimeError("frozen track context was not installed")
+            context.update(self._active_frozen_track_context)
+        return context
 
     def _selector_outputs(
         self,
@@ -471,8 +508,13 @@ class DiffusionGRPOOnlineSelectorPlanningHead(DiffusionPlanningHead):
                 context = self._scene_selector_context(
                     candidates_8, bev_feature, ego_query, agents_query, status_token
                 )
+            selector_inputs = dict(context)
+            if getattr(self.scene_selector, "requires_reference_logits", False):
+                selector_inputs["reference_logits"] = reference_logits.detach()
             delta_logits = self.scene_selector(
-                candidate_feature.detach(), candidates_8.detach(), **context
+                candidate_feature.detach(),
+                candidates_8.detach(),
+                **selector_inputs,
             )
             current_logits = reference_logits.detach() + delta_logits
         return current_logits, reference_logits.detach()

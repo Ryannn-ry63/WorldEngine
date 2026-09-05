@@ -29,7 +29,7 @@ export NAVSIM_METRIC_CACHE_PATH_EVAL="${NAVSIM_EXP_ROOT}/metric_cache_navtest"
 export NAVSIM_METRIC_CACHE_PATH="${NAVSIM_METRIC_CACHE_PATH_EVAL}"
 export PYTHONPATH="${DIFFUSIONDRIVE_BOOTSTRAP}:${ALGENGINE_ROOT}:${SIMENGINE_ROOT}:${DIFFUSIONDRIVE_ROOT}:${MMCV_ROOT}:${NUPLAN_DEVKIT_ROOT}:${SENIOR_NAVSIM_PARENT}:${PYTHONPATH:-}"
 
-export REASONER_CONFIG="${ALGENGINE_ROOT}/configs/diffusiondrive/e2e_diffusiondrive_grpo_selector_trajectory_set_reasoner.py"
+export REASONER_CONFIG="${REASONER_CONFIG_OVERRIDE:-${ALGENGINE_ROOT}/configs/diffusiondrive/e2e_diffusiondrive_grpo_selector_trajectory_set_reasoner.py}"
 export DIFFUSIONDRIVE_GRPO_CONFIG="${REASONER_CONFIG}"
 export REASONER_BASELINE=/inspire/hdd/project/roboticsystem2/wangcaojun-240208020180/repo-wcj/WorldEngine/experiments/diffusiondrive/e2e_diffusiondrive/epoch_100.pth
 export REASONER_BASELINE_SHA256=1c450bad0cf62ab9110a8101d2ff6c96984541bd975ddea598ddb2add086a514
@@ -38,7 +38,7 @@ export REASONER_PAIR_ROOT="${REASONER_SOURCE_ROOT}/rare_data"
 export REASONER_TUNING_ROOT="${REASONER_SOURCE_ROOT}/tuning_split"
 export REASONER_CACHE_ROOT="${REASONER_SOURCE_WORLDENGINE_ROOT}/experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/cache"
 export REASONER_METRIC_CACHE_INDEX="${REASONER_SOURCE_ROOT}/metric_cache_navtrain_full"
-export REASONER_EXPERIMENT_ROOT="${WORLDENGINE_ROOT}/experiments/diffusiondrive/trajectory_set_reasoner_grpo_v1"
+export REASONER_EXPERIMENT_ROOT="${REASONER_EXPERIMENT_ROOT_OVERRIDE:-${WORLDENGINE_ROOT}/experiments/diffusiondrive/trajectory_set_reasoner_grpo_v1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 
 reasoner_ensure_link() {

@@ -61,6 +61,34 @@ def cpu_record(token, scene, feature, context, result, index):
         "valid": (20,),
         "reference_logits": (20,),
     }
+    track_keys = (
+        "frozen_track_states",
+        "frozen_track_classes",
+        "frozen_track_mask",
+    )
+    track_presence = [key in context for key in track_keys]
+    if any(track_presence) and not all(track_presence):
+        raise RuntimeError(f"{token}: partial frozen-track context")
+    if all(track_presence):
+        values.update(
+            frozen_track_states=context["frozen_track_states"][index]
+            .detach()
+            .float()
+            .cpu(),
+            frozen_track_classes=context["frozen_track_classes"][index]
+            .detach()
+            .long()
+            .cpu(),
+            frozen_track_mask=context["frozen_track_mask"][index]
+            .detach()
+            .bool()
+            .cpu(),
+        )
+        expected.update(
+            frozen_track_states=(30, 8),
+            frozen_track_classes=(30,),
+            frozen_track_mask=(30,),
+        )
     for name, shape in expected.items():
         if tuple(values[name].shape) != shape:
             raise RuntimeError(f"{token}: {name} shape {tuple(values[name].shape)} != {shape}")
@@ -91,8 +119,11 @@ def merge_parts(output_dir, world_size, expected_tokens, selector_state, selecto
     if len(by_token) != expected_tokens:
         raise RuntimeError(f"merged coverage {len(by_token)} != {expected_tokens}")
     rows = [by_token[token] for token in sorted(by_token)]
+    has_frozen_tracks = "frozen_track_states" in rows[0]
+    if any(("frozen_track_states" in row) != has_frozen_tracks for row in rows):
+        raise RuntimeError("mixed frozen-track schemas in one context cache")
     cache = {
-        "schema_version": 2,
+        "schema_version": 4 if has_frozen_tracks else 2,
         "tokens": [row["token"] for row in rows],
         "scenes": [row["scene"] for row in rows],
         "candidate_features": torch.stack([row["feature"] for row in rows]),
@@ -108,6 +139,18 @@ def merge_parts(output_dir, world_size, expected_tokens, selector_state, selecto
         "baseline_selector_state": selector_state,
         "scene_selector_config": selector_config,
     }
+    if has_frozen_tracks:
+        cache.update(
+            frozen_track_states=torch.stack(
+                [row["frozen_track_states"] for row in rows]
+            ),
+            frozen_track_classes=torch.stack(
+                [row["frozen_track_classes"] for row in rows]
+            ),
+            frozen_track_mask=torch.stack(
+                [row["frozen_track_mask"] for row in rows]
+            ),
+        )
     cache_path = output_dir / "cache.pt"
     torch.save(cache, cache_path)
     return cache_path, cache
@@ -235,9 +278,13 @@ def main():
         algengine_root / "mmdet3d_plugin/navformer/detectors/navformer.py",
     )
     manifest = {
-        "schema_version": 2,
+        "schema_version": cache["schema_version"],
         "status": "PASS",
-        "method": "frozen_diffusiondrive_scene_selector_context_cache",
+        "method": (
+            "frozen_diffusiondrive_track_interaction_context_cache"
+            if cache["schema_version"] == 4
+            else "frozen_diffusiondrive_scene_selector_context_cache"
+        ),
         "implementation_files": {
             str(path): base.sha256_file(path) for path in implementation_paths
         },
@@ -262,6 +309,26 @@ def main():
             key: list(value.shape) for key, value in cache.items() if torch.is_tensor(value)
         },
     }
+    if cache["schema_version"] == 4:
+        manifest.update(
+            source_kind="frozen_track_interaction",
+            track_contract={
+                "source": "epoch_100_frozen_inference_tracker",
+                "ground_truth_matching": False,
+                "score_threshold": 0.35,
+                "maximum_tracks": 30,
+                "state_fields": [
+                    "x",
+                    "y",
+                    "length",
+                    "width",
+                    "yaw",
+                    "vx",
+                    "vy",
+                    "confidence",
+                ],
+            },
+        )
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(json.dumps(manifest, sort_keys=True))
     print(f"PASS selector context cache split={args.split} seed={args.noise_seed}")

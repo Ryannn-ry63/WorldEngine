@@ -727,6 +727,12 @@ class NAVFormer(MVXTwoStageDetector):
             planning_kwargs["sample_tokens"] = [
                 meta[self.queue_length - 1]["sample_idx"] for meta in img_metas
             ]
+        if getattr(self.planning_head, "requires_frozen_track_states", False):
+            planning_kwargs.update(
+                frozen_track_states=outs_track["frozen_track_states"],
+                frozen_track_classes=outs_track["frozen_track_classes"],
+                frozen_track_mask=outs_track["frozen_track_mask"],
+            )
 
         plan_results = self.planning_head.forward(
             bev_embed,
@@ -815,6 +821,12 @@ class NAVFormer(MVXTwoStageDetector):
             self.planning_head, "requires_paired_inference_sample_tokens", False
         ):
             planning_kwargs["sample_tokens"] = [meta[3]["sample_idx"] for meta in img_metas]
+        if getattr(self.planning_head, "requires_frozen_track_states", False):
+            planning_kwargs.update(
+                frozen_track_states=outs_track["frozen_track_states"],
+                frozen_track_classes=outs_track["frozen_track_classes"],
+                frozen_track_mask=outs_track["frozen_track_mask"],
+            )
 
         plan_results = self.planning_head.forward(
             bev_embed,
@@ -889,6 +901,147 @@ class NAVFormer(MVXTwoStageDetector):
             return_list.append(pdm_dict)
         return return_list
 
+    @staticmethod
+    def _pack_frozen_track_states(
+        frame_res, device, max_agents=30, score_threshold=0.35
+    ):
+        """Pack decoded frozen inference tracks into a fixed, masked tensor."""
+
+        if max_agents <= 0 or not 0.0 <= score_threshold <= 1.0:
+            raise ValueError("invalid frozen-track packing contract")
+        required = ("boxes_3d", "track_scores", "labels_3d")
+        if any(key not in frame_res for key in required):
+            raise RuntimeError("frozen tracker did not return decoded active tracks")
+        boxes = frame_res["boxes_3d"].tensor.detach().to(
+            device=device, dtype=torch.float32
+        )
+        scores = frame_res["track_scores"].detach().to(
+            device=device, dtype=torch.float32
+        )
+        labels = frame_res["labels_3d"].detach().to(device=device, dtype=torch.long)
+        if boxes.ndim != 2 or boxes.shape[-1] < 9:
+            raise RuntimeError("decoded frozen track boxes must have at least nine fields")
+        if scores.shape != boxes.shape[:1] or labels.shape != boxes.shape[:1]:
+            raise RuntimeError("decoded frozen track tensors are not aligned")
+        finite = torch.isfinite(boxes[:, (0, 1, 3, 4, 6, 7, 8)]).all(dim=-1)
+        finite = finite & torch.isfinite(scores)
+        keep = finite & scores.ge(float(score_threshold))
+        kept = torch.nonzero(keep, as_tuple=False).flatten()
+        if kept.numel():
+            order = scores[kept].argsort(descending=True)
+            kept = kept[order[:max_agents]]
+        states = torch.zeros(
+            1, max_agents, 8, dtype=torch.float32, device=device
+        )
+        classes = torch.full(
+            (1, max_agents), -1, dtype=torch.long, device=device
+        )
+        mask = torch.zeros(1, max_agents, dtype=torch.bool, device=device)
+        count = int(kept.numel())
+        if count:
+            selected = boxes[kept]
+            states[0, :count] = torch.stack(
+                (
+                    selected[:, 0],
+                    selected[:, 1],
+                    selected[:, 3],
+                    selected[:, 4],
+                    selected[:, 6],
+                    selected[:, 7],
+                    selected[:, 8],
+                    scores[kept],
+                ),
+                dim=-1,
+            )
+            classes[0, :count] = labels[kept]
+            mask[0, :count] = True
+        return {
+            "frozen_track_states": states.detach(),
+            "frozen_track_classes": classes.detach(),
+            "frozen_track_mask": mask.detach(),
+        }
+
+    def _forward_frozen_track_clip(
+        self, img, l2g_t, l2g_r_mat, img_metas, timestamp
+    ):
+        """Run frozen tracking without GT matching while preserving V3 BEV."""
+
+        if img.shape[0] != 1:
+            raise RuntimeError("frozen interaction cache currently requires batch size one")
+        track_instances = self._generate_empty_tracks()
+        self.track_base.clear()
+        num_frame = img.size(1)
+        frame_res = None
+        for index in range(num_frame):
+            prev_img = img[:, :index, ...] if index else img[:, :1, ...]
+            prev_img_metas = copy.deepcopy(img_metas)
+            img_single = torch.stack([sample[index] for sample in img], dim=0)
+            img_metas_single = [copy.deepcopy(meta[index]) for meta in img_metas]
+            if index == num_frame - 1:
+                l2g_r2 = l2g_t2 = time_delta = None
+            else:
+                l2g_r2 = l2g_r_mat[0][index + 1]
+                l2g_t2 = l2g_t[0][index + 1]
+                time_delta = timestamp[0][index + 1] - timestamp[0][index]
+            if index == 0:
+                track_l2g_r1 = track_l2g_t1 = None
+                track_l2g_r2 = track_l2g_t2 = track_time_delta = None
+            else:
+                track_l2g_r1 = l2g_r_mat[0][index - 1]
+                track_l2g_t1 = l2g_t[0][index - 1]
+                track_l2g_r2 = l2g_r_mat[0][index]
+                track_l2g_t2 = l2g_t[0][index]
+                track_time_delta = timestamp[0][index] - timestamp[0][index - 1]
+
+            # Preserve the process_perception=False V3 BEV exactly; tracking
+            # reuses it and therefore cannot perturb frozen candidate inputs.
+            bev_res = self._forward_single_frame(
+                img_single,
+                img_metas_single,
+                track_instances,
+                prev_img,
+                prev_img_metas,
+                l2g_r_mat[0][index],
+                l2g_t[0][index],
+                l2g_r2,
+                l2g_t2,
+                time_delta,
+                [],
+                [],
+                [],
+                [],
+            )
+            frame_res = self._inference_single_frame(
+                img_single,
+                img_metas_single,
+                track_instances,
+                None,
+                track_l2g_r1,
+                track_l2g_t1,
+                track_l2g_r2,
+                track_l2g_t2,
+                track_time_delta,
+                bev_override=(bev_res["bev_embed"], bev_res["bev_pos"]),
+                force_tracking=True,
+            )
+            track_instances = frame_res["track_instances"]
+
+        if frame_res is None:
+            raise RuntimeError("empty frozen tracking clip")
+        output = {
+            "bev_embed": frame_res["bev_embed"],
+            "bev_pos": frame_res["bev_pos"],
+        }
+        output.update(
+            self._pack_frozen_track_states(
+                frame_res,
+                device=frame_res["bev_embed"].device,
+                max_agents=30,
+                score_threshold=max(0.35, self.track_base.filter_score_thresh),
+            )
+        )
+        return output
+
     @auto_fp16(apply_to=("img", "points"))
     def forward_track_test(
         self,
@@ -905,6 +1058,10 @@ class NAVFormer(MVXTwoStageDetector):
         Args:
         Returns:
         """
+        if getattr(self.planning_head, "requires_frozen_track_states", False):
+            return self._forward_frozen_track_clip(
+                img, l2g_t, l2g_r_mat, img_metas, timestamp
+            )
         track_instances = self._generate_empty_tracks()
         # img = img[:, -2:]
         num_frame = img.size(1)
@@ -974,6 +1131,10 @@ class NAVFormer(MVXTwoStageDetector):
         Args:
         Returns:
         """
+        if getattr(self.planning_head, "requires_frozen_track_states", False):
+            return self._forward_frozen_track_clip(
+                img, l2g_t, l2g_r_mat, img_metas, timestamp
+            )
         track_instances = self._generate_empty_tracks()
         # img = img[:, -2:]
         num_frame = img.size(1)
@@ -1200,12 +1361,15 @@ class NAVFormer(MVXTwoStageDetector):
         l2g_r2=None,
         l2g_t2=None,
         time_delta=None,
+        bev_override=None,
+        force_tracking=False,
     ):
         """
         img: B, num_cam, C, H, W = img.shape
         """
 
-        if not self.skip_tracking:
+        tracking_enabled = bool(force_tracking or not self.skip_tracking)
+        if tracking_enabled:
             """ velo update """
             active_inst = track_instances[track_instances.obj_idxes >= 0]
             other_inst = track_instances[track_instances.obj_idxes < 0]
@@ -1226,9 +1390,14 @@ class NAVFormer(MVXTwoStageDetector):
             track_instances = Instances.cat([other_inst, active_inst])
 
         # NOTE: You can replace BEVFormer with other BEV encoder and provide bev_embed here
-        bev_embed, bev_pos = self.get_bevs(img, img_metas, prev_bev=prev_bev)
+        if bev_override is None:
+            bev_embed, bev_pos = self.get_bevs(img, img_metas, prev_bev=prev_bev)
+        else:
+            if len(bev_override) != 2:
+                raise ValueError("bev_override must contain (bev_embed, bev_pos)")
+            bev_embed, bev_pos = bev_override
         
-        if not self.skip_tracking:
+        if tracking_enabled:
             det_output = self.pts_bbox_head.get_detections(
                 bev_embed,
                 object_query_embeds=track_instances.query,

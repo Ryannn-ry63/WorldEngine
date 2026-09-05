@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import numpy as np
+
+
+HERE = Path(__file__).resolve()
+ALGENGINE = HERE.parents[1]
+SCRIPTS = ALGENGINE / "scripts/diffusiondrive"
+import sys
+sys.path.insert(0, str(SCRIPTS))
+SIMENGINE = ALGENGINE.parent / "SimEngine"
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+r15 = load("oracle_r15_common_test", SCRIPTS / "oracle_r15_common.py")
+builder = load("build_selector_oracle_r15_targets_test", SCRIPTS / "build_selector_oracle_r15_targets.py")
+repeatability = load(
+    "analyze_selector_oracle_r15_reward_repeatability_test",
+    SCRIPTS / "analyze_selector_oracle_r15_reward_repeatability.py",
+)
+
+
+def rewards(policy=3, oracle=9, policy_value=0.2, oracle_value=0.8):
+    values = np.linspace(0.0, 0.1, 20)
+    values[policy] = policy_value
+    values[oracle] = oracle_value
+    return values
+
+
+def record(decision, headroom, scene="scene-a", policy=3, oracle=9):
+    values = rewards(policy, oracle, 0.2, 0.2 + headroom)
+    return {
+        "rollout_scene_id": scene,
+        "decision_step": decision,
+        "state_step": decision - 1,
+        "policy_selected_index": policy,
+        "candidate_rewards": values,
+        "candidate_trajectories_8": np.zeros((20, 8, 3)),
+        "current_logits": np.eye(1, 20, policy).reshape(20),
+    }
+
+
+def test_stable_oracle_preserves_policy_only_on_top_tie():
+    values = rewards()
+    assert r15.stable_oracle_index(values, 3) == 9
+    values[3] = values[9] - 0.5e-8
+    assert r15.stable_oracle_index(values, 3) == 3
+
+
+def test_intervention_schedule_is_one_shot_or_persistent():
+    assert not r15.intervention_applies("observe_only", 6, 6, False)
+    assert r15.intervention_applies("one_shot_oracle", 6, 6, False)
+    assert not r15.intervention_applies("one_shot_oracle", 7, 6, False)
+    assert not r15.intervention_applies("one_shot_oracle", 6, 6, True)
+    assert not r15.intervention_applies("persistent_oracle", 5, 6, False)
+    assert r15.intervention_applies("persistent_oracle", 6, 6, False)
+    assert r15.intervention_applies("persistent_oracle", 11, 6, False)
+
+
+def test_target_freezer_uses_earliest_pre_violation_high_headroom_frame(tmp_path):
+    rows = []
+    for decision, headroom in ((4, 0.01), (5, 0.03), (6, 0.8), (7, 0.9)):
+        path = tmp_path / f"{decision}.pkl"
+        path.write_bytes(b"record")
+        rows.append((path, record(decision, headroom)))
+    outcome = {
+        "success": False,
+        "first_violation_step": 6,
+        "score": 0.0,
+        "no_at_fault_collisions": 0.0,
+        "drivable_area_compliance": 1.0,
+    }
+    target = builder.target_for_scene(rows, outcome, threshold=0.02)
+    assert target["decision_step"] == 5
+    assert target["state_step"] == 4
+    assert target["oracle_index"] == 9
+    assert target["headroom"] > 0.02
+
+
+def test_target_freezer_rejects_post_violation_and_success_cases(tmp_path):
+    path = tmp_path / "record.pkl"
+    path.write_bytes(b"record")
+    rows = [(path, record(7, 0.8))]
+    failed = {
+        "success": False,
+        "first_violation_step": 6,
+        "score": 0.0,
+        "no_at_fault_collisions": 0.0,
+        "drivable_area_compliance": 1.0,
+    }
+    assert builder.target_for_scene(rows, failed, 0.02) is None
+    failed["success"] = True
+    assert builder.target_for_scene(rows, failed, 0.02) is None
+
+
+def test_array_errors_are_fail_closed():
+    assert r15.max_abs_error(np.zeros(20), np.zeros(20)) == 0.0
+    assert np.isinf(r15.max_abs_error(np.zeros(2), np.zeros(3)))
+
+
+def test_target_context_identity_does_not_depend_on_rerun_reward():
+    target = {
+        "candidate_trajectories_8": np.zeros((20, 8, 3)),
+        "candidate_rewards": np.zeros(20),
+        "current_logits": np.zeros(20),
+    }
+    errors = r15.target_context_errors(
+        target, np.zeros((20, 8, 3)), np.zeros(20)
+    )
+    assert errors == {
+        "candidate_trajectories_8": 0.0,
+        "current_logits": 0.0,
+    }
+
+
+def test_repeatability_probe_localizes_progress_only_drift():
+    base = {
+        "candidate_trajectories_8": np.zeros((20, 8, 3)),
+        "reference_logits": np.arange(20, dtype=np.float64),
+        "candidate_rewards": np.linspace(0.0, 1.0, 20),
+        "candidate_reward_components": np.zeros((20, 6)),
+    }
+    rerun = {key: np.array(value, copy=True) for key, value in base.items()}
+    rerun["candidate_rewards"][4] += 0.3
+    rerun["candidate_reward_components"][4, 2] += 0.8
+    result = repeatability.compare_records(base, rerun)
+    assert np.isclose(result["candidate_rewards_max_abs_error"], 0.3)
+    assert result["candidate_trajectories_max_abs_error"] == 0.0
+    assert np.isclose(result["component_max_abs_error"]["ego_progress"], 0.8)
+    assert all(
+        value == 0.0
+        for name, value in result["component_max_abs_error"].items()
+        if name != "ego_progress"
+    )
+
+
+def test_source_contract_keeps_r15_opt_in_and_pre_action():
+    base_env = (SIMENGINE / "worldengine/envs/base_env.py").read_text()
+    manager = (SIMENGINE / "worldengine/manager/diffusiondrive_preaction_oracle_manager.py").read_text()
+    config = (ALGENGINE / "configs/diffusiondrive/e2e_diffusiondrive_grpo_selector_v3_preaction_oracle.py").read_text()
+    assert "diffusiondrive_preaction_oracle" in base_env
+    assert "self.engine.external_actions = deployed_action" in manager
+    assert "decision_step != self.current_step + 1" in manager
+    assert 'action_score_timing="pre_action"' in config
+    assert "training_data_consumed=False" in config
+    assert "oracle_future_information_used=True" in config
+    assert 'else "oracle_index"' in manager
+    assert '"one_shot_matched"' in manager
+    assert 'self.intervention_mode.startswith("one_shot_")' in manager
+    assert "target_context_errors(target, candidates_8, logits)" in manager
+    assert "causal_gate_requires_current_headroom_gt_0p02=True" in config

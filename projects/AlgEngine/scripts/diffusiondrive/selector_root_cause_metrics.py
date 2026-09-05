@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Shared, reward-blind analysis utilities for selector root-cause studies.
+
+The reward is used only after logits have been produced.  None of the helpers
+in this file expose reward components to a selector.
+"""
+
+from __future__ import annotations
+
+import csv
+import hashlib
+import math
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+
+
+COMPONENT_NAMES = (
+    "no_at_fault_collisions",
+    "drivable_area_compliance",
+    "ego_progress",
+    "time_to_collision_within_bound",
+    "comfort",
+    "driving_direction_compliance",
+)
+HEADROOM_THRESHOLDS = (0.005, 0.02)
+CI_METRICS = (
+    "selected_reward",
+    "oracle_reward",
+    "headroom",
+    "recoverable_0p005",
+    "recoverable_0p02",
+    "oracle_probability",
+    "oracle_in_top5",
+    "oracle_in_top8",
+)
+
+
+def log_id(scene_id: str) -> str:
+    """Recover the nuPlan log identifier without discarding scene range data."""
+
+    return str(scene_id).rsplit("-", 1)[0]
+
+
+def load_outcomes(path: Path) -> dict[str, dict[str, float | bool]]:
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    output = {}
+    with path.open(newline="") as stream:
+        for row in csv.DictReader(stream):
+            scene = str(row["token"])
+            if scene == "overall_average":
+                continue
+            if scene in output:
+                raise RuntimeError(f"duplicate metric row for {scene}: {path}")
+            nc = float(row["no_at_fault_collisions"])
+            dac = float(row["drivable_area_compliance"])
+            output[scene] = {
+                "success": bool(nc >= 1.0 and dac >= 1.0),
+                "score": float(row["score"]),
+                "no_at_fault_collisions": nc,
+                "drivable_area_compliance": dac,
+                "ego_progress": float(row["ego_progress"]),
+            }
+    if not output:
+        raise RuntimeError(f"empty metric CSV: {path}")
+    return output
+
+
+def _softmax(logits: np.ndarray, temperature: float) -> np.ndarray:
+    scaled = np.asarray(logits, dtype=np.float64) / float(temperature)
+    scaled = scaled - scaled.max(axis=-1, keepdims=True)
+    values = np.exp(scaled)
+    return values / values.sum(axis=-1, keepdims=True)
+
+
+def frame_metric_arrays(
+    logits: np.ndarray,
+    rewards: np.ndarray,
+    components: np.ndarray,
+    *,
+    reference_logits: np.ndarray | None = None,
+    behavior_indices: np.ndarray | None = None,
+    temperature: float = 1.0,
+) -> dict[str, np.ndarray]:
+    """Compute selector diagnostics for a batch of fixed 20-candidate sets."""
+
+    logits = np.asarray(logits, dtype=np.float64)
+    rewards = np.asarray(rewards, dtype=np.float64)
+    components = np.asarray(components, dtype=np.float64)
+    if logits.ndim != 2 or logits.shape[1] != 20:
+        raise RuntimeError(f"logits shape {logits.shape} != (N, 20)")
+    if rewards.shape != logits.shape:
+        raise RuntimeError(f"reward shape {rewards.shape} != {logits.shape}")
+    if components.shape != (len(logits), 20, len(COMPONENT_NAMES)):
+        raise RuntimeError(
+            f"component shape {components.shape} != "
+            f"({len(logits)}, 20, {len(COMPONENT_NAMES)})"
+        )
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    if not all(np.isfinite(value).all() for value in (logits, rewards, components)):
+        raise RuntimeError("non-finite selector analysis input")
+
+    rows = np.arange(len(logits))
+    selected = logits.argmax(axis=1)
+    oracle = rewards.argmax(axis=1)
+    selected_reward = rewards[rows, selected]
+    oracle_reward = rewards[rows, oracle]
+    headroom = oracle_reward - selected_reward
+    probabilities = _softmax(logits, temperature)
+    order = np.argsort(-logits, axis=1, kind="stable")
+    ranks = np.empty_like(order)
+    ranks[rows[:, None], order] = np.arange(20)[None, :]
+    oracle_rank = ranks[rows, oracle] + 1
+    top5 = order[:, :5]
+    top8 = order[:, :8]
+    top5_reward = np.take_along_axis(rewards, top5, axis=1).max(axis=1)
+    top8_reward = np.take_along_axis(rewards, top8, axis=1).max(axis=1)
+    sorted_logits = np.take_along_axis(logits, order, axis=1)
+
+    output = {
+        "selected_reward": selected_reward,
+        "oracle_reward": oracle_reward,
+        "headroom": headroom,
+        "recoverable_0p005": (headroom > HEADROOM_THRESHOLDS[0]).astype(np.float64),
+        "recoverable_0p02": (headroom > HEADROOM_THRESHOLDS[1]).astype(np.float64),
+        "selected_probability": probabilities[rows, selected],
+        "oracle_probability": probabilities[rows, oracle],
+        "oracle_rank": oracle_rank.astype(np.float64),
+        "oracle_in_top5": (oracle_rank <= 5).astype(np.float64),
+        "oracle_in_top8": (oracle_rank <= 8).astype(np.float64),
+        "top5_oracle_reward": top5_reward,
+        "top8_oracle_reward": top8_reward,
+        "entropy": -(probabilities * np.log(np.maximum(probabilities, 1e-300))).sum(axis=1),
+        "normalized_entropy": -(
+            probabilities * np.log(np.maximum(probabilities, 1e-300))
+        ).sum(axis=1)
+        / math.log(20.0),
+        "top1_top2_logit_margin": sorted_logits[:, 0] - sorted_logits[:, 1],
+        "oracle_probability_below_1e-4": (
+            probabilities[rows, oracle] < 1e-4
+        ).astype(np.float64),
+    }
+    for index, name in enumerate(COMPONENT_NAMES):
+        selected_component = components[rows, selected, index]
+        oracle_component = components[rows, oracle, index]
+        output[f"selected_component_{name}"] = selected_component
+        output[f"oracle_component_{name}"] = oracle_component
+        output[f"oracle_minus_selected_component_{name}"] = (
+            oracle_component - selected_component
+        )
+
+    if behavior_indices is not None:
+        behavior_indices = np.asarray(behavior_indices, dtype=np.int64)
+        if behavior_indices.shape != (len(logits),):
+            raise RuntimeError("behavior index shape drifted")
+        behavior_reward = rewards[rows, behavior_indices]
+        output["behavior_reward"] = behavior_reward
+        output["selected_minus_behavior_reward"] = selected_reward - behavior_reward
+    if reference_logits is not None:
+        reference_logits = np.asarray(reference_logits, dtype=np.float64)
+        if reference_logits.shape != logits.shape:
+            raise RuntimeError("reference logit shape drifted")
+        output["residual_logit_max_abs"] = np.max(
+            np.abs(logits - reference_logits), axis=1
+        )
+    return output
+
+
+def _group_means(
+    values: dict[str, np.ndarray], groups: list[str]
+) -> tuple[list[str], dict[str, np.ndarray]]:
+    positions: dict[str, list[int]] = defaultdict(list)
+    for index, group in enumerate(groups):
+        positions[str(group)].append(index)
+    keys = sorted(positions)
+    means = {
+        metric: np.asarray(
+            [float(np.mean(array[positions[key]])) for key in keys],
+            dtype=np.float64,
+        )
+        for metric, array in values.items()
+    }
+    return keys, means
+
+
+def _bootstrap_intervals(
+    values: dict[str, np.ndarray], repetitions: int, seed: int
+) -> dict[str, dict[str, float]]:
+    metrics = [metric for metric in CI_METRICS if metric in values]
+    if not metrics:
+        return {}
+    matrix = np.column_stack([values[metric] for metric in metrics])
+    count = len(matrix)
+    if count == 0:
+        return {}
+    if count == 1 or repetitions <= 0:
+        sampled = np.repeat(matrix.mean(axis=0)[None, :], 1, axis=0)
+    else:
+        rng = np.random.default_rng(seed)
+        parts = []
+        remaining = repetitions
+        while remaining:
+            chunk = min(256, remaining)
+            indices = rng.integers(0, count, size=(chunk, count))
+            parts.append(matrix[indices].mean(axis=1))
+            remaining -= chunk
+        sampled = np.concatenate(parts, axis=0)
+    return {
+        metric: {
+            "lower95": float(np.quantile(sampled[:, index], 0.025)),
+            "point": float(matrix[:, index].mean()),
+            "upper95": float(np.quantile(sampled[:, index], 0.975)),
+        }
+        for index, metric in enumerate(metrics)
+    }
+
+
+def summarize_stratum(
+    metrics: dict[str, np.ndarray],
+    scenes: list[str],
+    mask: np.ndarray,
+    *,
+    bootstrap_repetitions: int,
+    bootstrap_seed: int,
+) -> dict:
+    mask = np.asarray(mask, dtype=np.bool_)
+    if mask.shape != (len(scenes),):
+        raise RuntimeError("stratum mask shape drifted")
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        return {
+            "frame_count": 0,
+            "scenario_count": 0,
+            "log_count": 0,
+            "frame_means": {},
+            "scenario_means": {},
+            "scenario_bootstrap_95": {},
+            "log_bootstrap_95": {},
+        }
+    subset = {key: np.asarray(value)[indices] for key, value in metrics.items()}
+    subset_scenes = [scenes[index] for index in indices]
+    scenario_keys, scenario_values = _group_means(subset, subset_scenes)
+    log_keys, log_values = _group_means(subset, [log_id(scene) for scene in subset_scenes])
+    digest = hashlib.sha256("\n".join(scenario_keys).encode()).digest()
+    offset = int.from_bytes(digest[:4], "little")
+    return {
+        "frame_count": len(indices),
+        "scenario_count": len(scenario_keys),
+        "log_count": len(log_keys),
+        "frame_means": {key: float(np.mean(value)) for key, value in subset.items()},
+        "scenario_means": {
+            key: float(np.mean(value)) for key, value in scenario_values.items()
+        },
+        "scenario_bootstrap_95": _bootstrap_intervals(
+            scenario_values, bootstrap_repetitions, bootstrap_seed + offset
+        ),
+        "log_bootstrap_95": _bootstrap_intervals(
+            log_values, bootstrap_repetitions, bootstrap_seed + offset + 1
+        ),
+    }
+
+
+def summarize_policy(
+    metrics: dict[str, np.ndarray],
+    scenes: list[str],
+    outcomes: dict[str, dict[str, float | bool]],
+    *,
+    bootstrap_repetitions: int = 10000,
+    bootstrap_seed: int = 20260902,
+) -> dict:
+    count = len(scenes)
+    if not count or any(len(value) != count for value in metrics.values()):
+        raise RuntimeError("empty or misaligned policy metrics")
+    missing = sorted(set(scenes) - set(outcomes))
+    if missing:
+        raise RuntimeError(f"missing closed-loop outcomes for {len(missing)} scenes")
+    success = np.asarray([bool(outcomes[scene]["success"]) for scene in scenes])
+    return {
+        "outcome_definition": "NC==1_and_DAC==1",
+        "strata": {
+            "overall": summarize_stratum(
+                metrics,
+                scenes,
+                np.ones(count, dtype=np.bool_),
+                bootstrap_repetitions=bootstrap_repetitions,
+                bootstrap_seed=bootstrap_seed,
+            ),
+            "closed_loop_success": summarize_stratum(
+                metrics,
+                scenes,
+                success,
+                bootstrap_repetitions=bootstrap_repetitions,
+                bootstrap_seed=bootstrap_seed + 10,
+            ),
+            "closed_loop_failure": summarize_stratum(
+                metrics,
+                scenes,
+                ~success,
+                bootstrap_repetitions=bootstrap_repetitions,
+                bootstrap_seed=bootstrap_seed + 20,
+            ),
+        },
+        "closed_loop_scenario_score_mean": float(
+            np.mean([outcomes[scene]["score"] for scene in sorted(set(scenes))])
+        ),
+        "closed_loop_scenario_success_rate": float(
+            np.mean([outcomes[scene]["success"] for scene in sorted(set(scenes))])
+        ),
+    }
+
+
+def concatenate_metric_chunks(
+    chunks: dict[str, list[np.ndarray]]
+) -> dict[str, np.ndarray]:
+    return {key: np.concatenate(parts, axis=0) for key, parts in chunks.items()}
+

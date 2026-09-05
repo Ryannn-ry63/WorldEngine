@@ -54,7 +54,12 @@ def parse_args():
     parser.add_argument("--method-name")
     parser.add_argument(
         "--architecture",
-        choices=("scene_conditioned_v3", "trajectory_set_reasoner"),
+        choices=(
+            "scene_conditioned_v3",
+            "trajectory_set_reasoner",
+            "interaction_generic",
+            "interaction_relation",
+        ),
         default="trajectory_set_reasoner",
     )
     parser.add_argument(
@@ -389,8 +394,12 @@ def main():
             "num_temporal_layers": args.num_temporal_layers,
             "num_relation_layers": args.num_relation_layers,
         }
-    else:
+    elif args.architecture == "scene_conditioned_v3":
         architecture_config = {"num_set_layers": args.num_set_layers}
+    else:
+        if args.ablation != "full":
+            raise RuntimeError("locked interaction arms require --ablation full")
+        architecture_config = {}
     model, model_config = common.model_from_cache(
         caches[0], args.ablation, args.architecture, architecture_config
     )

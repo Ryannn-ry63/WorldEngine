@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "status": "CAUSAL_CACHE_COLLECTION_IN_PROGRESS_AND_ASTRA_REVIEW_PENDING",
+  "updated_utc": "2026-09-04T00:00:00Z",
+  "paper_contract": {
+    "candidate_count": 20,
+    "generator_frozen": true,
+    "perception_frozen": true,
+    "base_selector_frozen": true,
+    "v3_selector_frozen": true,
+    "inference_uses_reward_or_q": false
+  },
+  "frozen_evidence": {
+    "ccv_decision": "AUTHORIZE_BASIN_AWARE_LONG_HORIZON_CAUSAL_ADVANTAGE",
+    "ccv_training_data_consumed": false,
+    "ccv_gate": "experiments/diffusiondrive/selector_ccv_sweep_v1/runs/ccv_sweep_v1_mergefix_20260904/ccv_gate.json",
+    "behavior_checkpoint_sha256": "bd35f0293c878c6cddb985ac0b8aaae91d4f7f8e0bf2c3bf70ba49ba329c02a3"
+  },
+  "data_contract": {
+    "source": "diffusiondrive_v4_split0",
+    "allowed_families": [
+      "original/rare_union",
+      "original/matched_common"
+    ],
+    "forbidden_sources": [
+      "test",
+      "augmented",
+      "broad_common",
+      "BWM",
+      "prior_ccv_33"
+    ],
+    "pilot_train_targets": 64,
+    "full_train_targets": 256,
+    "sealed_development_targets": 64,
+    "development_consumed": false,
+    "test_or_certification_consumed": false
+  },
+  "method_protocol": {
+    "status": "DRAFT_AWAITING_ASTRA_REVIEW",
+    "method_outcomes_authorized": false,
+    "arms": ["A0", "A1", "A2", "A3", "A4", "A5"]
+  },
+  "stages": [
+    {"name": "documentation", "status": "COMPLETE", "decision": "PROCEED_TO_IMPLEMENTATION"},
+    {"name": "source_preflight", "status": "PENDING", "decision": null},
+    {"name": "baseline_a_b", "status": "PENDING", "decision": null},
+    {"name": "target_freeze", "status": "PENDING", "decision": null},
+    {"name": "sentinel", "status": "PENDING", "decision": null},
+    {"name": "pilot64_causal_cache", "status": "PENDING", "decision": null},
+    {"name": "pilot_information_gate", "status": "PENDING", "decision": null},
+    {"name": "expand192_causal_cache", "status": "NOT_AUTHORIZED", "decision": null},
+    {"name": "sealed_dev64_causal_cache", "status": "NOT_AUTHORIZED", "decision": null},
+    {"name": "astra_review", "status": "PENDING", "decision": null},
+    {"name": "v4_method_training", "status": "NOT_AUTHORIZED", "decision": null}
+  ],
+  "next_authorized_stage": "source_preflight",
+  "artifacts": {}
+}

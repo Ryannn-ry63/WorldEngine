@@ -36,6 +36,15 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def plain_config_value(value):
+    """Convert MMCV config containers to stable, pickle-only primitives."""
+    if isinstance(value, dict):
+        return {str(key): plain_config_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain_config_value(item) for item in value]
+    return value
+
+
 def save_diffusiondrive_rollout_sidecar(
     result, cfg, file_monitor, planner_step, provenance, source_frame_path=None
 ):
@@ -364,6 +373,26 @@ def main():
     rollout_provenance['code_sha'] = os.getenv(
         'DIFFUSIONDRIVE_ROLLOUT_CODE_SHA'
     )
+    selector_contract = plain_config_value(
+        cfg.get('selector_rollout_contract', {})
+    )
+    rollout_provenance['selector_rollout_contract'] = selector_contract
+    # The nested contract is authoritative.  These flat fields make it easy
+    # for collection auditors to reject a mislabeled behavior policy without
+    # depending on MMCV types or config parsing.
+    rollout_provenance['behavior_policy_family'] = selector_contract.get(
+        'behavior_policy_family'
+    )
+    rollout_provenance['behavior_policy_train_seed'] = selector_contract.get(
+        'behavior_policy_train_seed'
+    )
+    rollout_provenance['behavior_checkpoint_manifest_sha256'] = (
+        selector_contract.get('behavior_checkpoint_manifest_sha256')
+    )
+    rollout_provenance['diagnostic_split'] = selector_contract.get(
+        'diagnostic_split'
+    )
+    rollout_provenance['react_type'] = selector_contract.get('react_type')
     # import modules from string list.
     if cfg.get('custom_imports', None):
         from mmcv.utils import import_modules_from_strings

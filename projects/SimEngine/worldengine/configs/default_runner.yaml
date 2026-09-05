@@ -151,6 +151,22 @@ reward_buffer_size: 9
 diffusiondrive_dynamic_candidate_reward: false
 diffusiondrive_candidate_sidecar_path: null
 diffusiondrive_sidecar_timeout_s: 30.0
+# R1.5-only pre-action diagnostic/intervention.  All defaults are inert.
+diffusiondrive_preaction_oracle: false
+diffusiondrive_preaction_mode: observe_only
+diffusiondrive_behavior_train_seed: -1
+diffusiondrive_oracle_target_manifest: null
+diffusiondrive_oracle_target_manifest_sha256: none
+# CCV-sweep-only arbitrary one-step candidate intervention. Defaults are inert.
+diffusiondrive_candidate_sweep: false
+diffusiondrive_ccv_treatment_manifest: null
+diffusiondrive_ccv_treatment_manifest_sha256: none
+# V4-only method-neutral causal cache collection. Defaults are inert.
+diffusiondrive_v4_causal_cache: false
+diffusiondrive_v4_intervention_mode: observe_only
+diffusiondrive_v4_collection_id: null
+diffusiondrive_v4_treatment_manifest: null
+diffusiondrive_v4_treatment_manifest_sha256: none
 
 # Resume functionality
 enable_resume: false

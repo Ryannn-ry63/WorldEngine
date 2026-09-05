@@ -105,6 +105,9 @@ def main():
             # This directory is absent for every existing algorithm.  When
             # present, records are immutable and hard-linked like pdms_pkl.
             (f"{openscene_base}/diffusiondrive_rollout_records", "*_reward.pkl", False),
+            (f"{openscene_base}/diffusiondrive_preaction_records", "*_preaction.pkl", False),
+            (f"{openscene_base}/diffusiondrive_ccv_records", "*_ccv.pkl", False),
+            (f"{openscene_base}/diffusiondrive_v4_causal_records", "*_v4causal.pkl", False),
         ]
 
         for subdir, pattern, use_symlink in link_tasks:
