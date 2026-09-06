@@ -24,6 +24,26 @@ def job_name(method, lr, fold, seed):
     return f"{method}_lr{lr:g}_fold{fold}_seed{seed}"
 
 
+def validate_incumbent_recompute(model, rows, device):
+    maximum = 0.0
+    mismatches = []
+    with torch.no_grad():
+        for offset in range(0, len(rows), 16):
+            ids = list(range(offset, min(offset + 16, len(rows))))
+            scores = models.score(model, rows, ids, device, "residual").cpu().numpy()
+            expected = np.stack([rows[i]["v3_logits"] for i in ids])
+            maximum = max(maximum, float(np.max(np.abs(scores - expected))))
+            mismatches.extend(rows[i]["scene_id"] for i, actual, cached in zip(
+                ids, scores.argmax(1), expected.argmax(1)) if int(actual) != int(cached))
+    result = dict(max_abs=maximum, tolerance=common.MODEL_RECOMPUTE_TOLERANCE,
+                  argmax_mismatch_count=len(mismatches), argmax_mismatch_scene_ids=mismatches,
+                  comparison="offline_loaded_selector_vs_h100_full_planner_cached_logits",
+                  collected_array_tolerance_unchanged=common.ARRAY_TOLERANCE)
+    if maximum > common.MODEL_RECOMPUTE_TOLERANCE or mismatches:
+        raise RuntimeError("Cached V3 score/argmax parity failed: " + json.dumps(result, sort_keys=True))
+    return result
+
+
 def train(args):
     cache_audit = common.verified_json(args.cache_audit, "cache_file")
     if Path(cache_audit["cache_file"]).resolve() != args.cache.resolve():
@@ -44,6 +64,8 @@ def train(args):
     mode = "direct_q" if method["objective"] == "mse" else "residual"
     provenance = dict(cache_sha256=cache_sha, method=args.method, learning_rate=args.lr,
                       fold=args.fold, seed=args.seed, batch_size=16, max_steps=500,
+                      model_recompute_tolerance=common.MODEL_RECOMPUTE_TOLERANCE,
+                      exact_cached_argmax_required=True,
                       pilot_gate_sha256=common.sha256_file(args.pilot_gate),
                       implementation={p.name: common.sha256_file(p) for p in [
                           Path(__file__), Path(models.__file__),
@@ -69,14 +91,7 @@ def train(args):
         raise RuntimeError("CUDA unavailable; do not silently train on CPU")
     incumbent, config, manifest = models.load_incumbent(args.checkpoint_manifest)
     incumbent.to(args.device)
-    with torch.no_grad():
-        for offset in range(0, len(rows), 16):
-            ids = list(range(offset, min(offset + 16, len(rows))))
-            scores = models.score(incumbent, rows, ids, args.device, "residual").cpu().numpy()
-            expected = np.stack([rows[i]["v3_logits"] for i in ids])
-            if (np.max(np.abs(scores - expected)) > 1e-5
-                    or not np.array_equal(scores.argmax(1), expected.argmax(1))):
-                raise RuntimeError("Cached V3 score/argmax parity failed")
+    incumbent_parity = validate_incumbent_recompute(incumbent, rows, args.device)
     labels = torch.as_tensor(np.stack([r[method["label"]] for r in rows]), dtype=torch.float32)
     incumbents = torch.tensor([r["policy_index"] for r in rows], dtype=torch.long)
     weights = classification_weights(labels[train_ids], incumbents[train_ids], method["delta"])
@@ -151,6 +166,7 @@ def train(args):
                   train_scene_count=len(train_ids), heldout_scene_count=len(test_ids),
                   training_data_consumed=True, development_consumed=False, test_consumed=False,
                   inference_uses_reward_or_q=False, score_mode=mode, provenance=provenance)
+    report["incumbent_recompute_parity"] = incumbent_parity
     common.atomic_json(report_path, report)
     return report
 

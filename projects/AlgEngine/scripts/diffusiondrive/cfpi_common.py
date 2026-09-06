@@ -29,6 +29,9 @@ DECISION_STEPS = tuple(range(4, 12))
 ARRAY_TOLERANCE = 1e-5
 ACTION_TOLERANCE = 1e-4
 OUTCOME_TOLERANCE = 1e-3
+# Offline selector recomputation crosses a full-planner H100 export boundary.
+# Keep this distinct from paired collection-array parity.
+MODEL_RECOMPUTE_TOLERANCE = 1e-4
 Q_SPAN_THRESHOLD = 0.02
 Q_POLICY_GAP_THRESHOLD = 0.02
 TRAIN_POOL_PER_FAMILY = 512

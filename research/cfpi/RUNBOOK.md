@@ -65,3 +65,18 @@ materialize_selector_cfpi.py 导出完整 checkpoint 并核验非 selector 参�
 首轮实现、58 项 CPU 测试和真实硬件阻塞证据见
 [IMPLEMENTATION_HANDOFF_20260905.md](IMPLEMENTATION_HANDOFF_20260905.md)。
 首次 H100 启动与 source 修复说明见 [SOURCE_ALLOCATION_FIX_20260905.md](SOURCE_ALLOCATION_FIX_20260905.md)。
+
+## r2 采集后的 CV continuation
+
+r2 已完成采集和信息 gate，但旧训练重算阈值在优化前停止。不要重跑采集，也不要
+修改 r2 contract。修复说明见 [CV_RECOMPUTE_FIX_20260906.md](CV_RECOMPUTE_FIX_20260906.md)。
+在 8 H100 节点运行：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash run_diffusiondrive_selector_cfpi_8h100.sh \
+  cv_continuation cfpi_pilot_20260905_r2_cv1 --gpus 8 --gpu-hours 72.6 \
+  --pilot-source-run experiments/diffusiondrive/selector_cfpi_v1/runs/cfpi_pilot_20260905_r2
+```
+
+该入口只训练 CV 并生成 pilot report；运行器只读使用指向 r2 冻结文件的 lineage
+链接，并在建链前重新检查 contract 中记录的全部 SHA256。

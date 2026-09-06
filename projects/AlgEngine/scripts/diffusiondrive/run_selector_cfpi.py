@@ -22,7 +22,7 @@ SCRIPT = Path(__file__).resolve().parent
 ROOT = SCRIPT.parents[3]
 CANONICAL = Path("/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine")
 STAGES = ("preflight", "source", "baseline_train", "freeze", "sentinel", "pilot",
-          "pilot_audit", "train_cv", "report", "first_phase")
+          "pilot_audit", "train_cv", "report", "first_phase", "cv_continuation")
 
 
 def utc():
@@ -68,6 +68,81 @@ def implementation_inventory():
     return {str(p.relative_to(ROOT)): c.sha256_file(p) for p in sorted(files)}
 
 
+def validate_cv_source(source_run):
+    source_run = Path(source_run).expanduser().resolve()
+    if not source_run.is_dir():
+        raise RuntimeError(f"Missing frozen pilot source run: {source_run}")
+    source_contract = json.loads((source_run / "run_contract.json").read_text())
+    ledger = json.loads((source_run / "decision_ledger.json").read_text())
+    if not isinstance(source_contract, dict) or not isinstance(ledger, dict):
+        raise RuntimeError("Invalid frozen pilot source contract/ledger")
+    gate = c.verified_json(source_run / "pilot_gate.json")
+    pilot_audit = c.verified_json(source_run / "cache/pilot64_cache_audit.json", "cache_file")
+    repeat_audit = c.verified_json(source_run / "cache/repeat8_cache_audit.json", "cache_file")
+    pilot = c.load_pickle(pilot_audit["cache_file"])
+    rows = c.validate_cache(pilot)
+    repeat = c.load_pickle(repeat_audit["cache_file"])
+    if (gate.get("status") != "PASS" or gate.get("training_authorized") is not True
+            or gate.get("information_gate_pass") is not True
+            or gate.get("expansion_authorized") is not False
+            or gate.get("development_consumed") is not False
+            or gate.get("test_consumed") is not False):
+        raise RuntimeError("Frozen pilot gate does not authorize train-only CV")
+    if (gate["cache_sha256"] != pilot_audit["cache_file_sha256"]
+            or gate["repeat_cache_sha256"] != repeat_audit["cache_file_sha256"]):
+        raise RuntimeError("Frozen pilot gate/cache lineage drifted")
+    if (len(rows) != 64 or repeat.get("method") != c.CACHE_METHOD
+            or repeat.get("stage") != "repeat8" or repeat.get("num_rows") != 8
+            or repeat.get("status") != "PASS"):
+        raise RuntimeError("Frozen pilot/repeat cache contract is incomplete")
+    if (source_contract.get("code_sha") != pilot.get("collection_code_sha")
+            or source_contract.get("design_version") != c.DESIGN_VERSION):
+        raise RuntimeError("Frozen pilot collection code contract drifted")
+    if (ledger.get("active") is not None or ledger.get("development_consumed") is not False
+            or ledger.get("test_consumed") is not False
+            or ledger.get("expansion_authorized") is not False):
+        raise RuntimeError("Frozen pilot source ledger is not safely stopped")
+    files = {
+        "source_run_contract": source_run / "run_contract.json",
+        "source_decision_ledger": source_run / "decision_ledger.json",
+        "pilot_gate": source_run / "pilot_gate.json",
+        "pilot_cache": Path(pilot_audit["cache_file"]),
+        "pilot_cache_audit": source_run / "cache/pilot64_cache_audit.json",
+        "repeat_cache": Path(repeat_audit["cache_file"]),
+        "repeat_cache_audit": source_run / "cache/repeat8_cache_audit.json",
+    }
+    return dict(source_run=str(source_run), source_gpu_hour_limit=float(source_contract["gpu_hour_limit"]),
+                source_gpu_hours_used=float(ledger["gpu_hours_used"]),
+                remaining_gpu_hours=float(source_contract["gpu_hour_limit"]) - float(ledger["gpu_hours_used"]),
+                information_gate_improvable_count=int(gate["improvable_above_0p02"]),
+                repeat_max_absolute_error=float(gate["repeat_max_absolute_error"]),
+                files={key: dict(path=str(path.resolve()), sha256=c.sha256_file(path))
+                       for key, path in files.items()})
+
+
+def link_cv_inputs(target_run, lineage):
+    target_run = Path(target_run).resolve()
+    for name, artifact in lineage["files"].items():
+        if c.sha256_file(artifact["path"]) != artifact["sha256"]:
+            raise RuntimeError(f"Frozen CV source changed before linking: {name}")
+    links = {
+        target_run / "pilot_gate.json": lineage["files"]["pilot_gate"]["path"],
+        target_run / "cache/pilot64_cache.pkl": lineage["files"]["pilot_cache"]["path"],
+        target_run / "cache/pilot64_cache_audit.json": lineage["files"]["pilot_cache_audit"]["path"],
+        target_run / "cache/repeat8_cache.pkl": lineage["files"]["repeat_cache"]["path"],
+        target_run / "cache/repeat8_cache_audit.json": lineage["files"]["repeat_cache_audit"]["path"],
+    }
+    for target, source in links.items():
+        source = Path(source).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() or target.is_symlink():
+            if not target.is_symlink() or target.resolve() != source:
+                raise RuntimeError(f"Refusing to replace CV continuation input: {target}")
+        else:
+            target.symlink_to(source)
+    c.locked_json(target_run / "cv_continuation_manifest.json", lineage)
+
+
 class Runner:
     def __init__(self, args):
         self.args = args
@@ -84,6 +159,9 @@ class Runner:
         self.source = args.source_worldengine_root / "experiments/grpo_sources/diffusiondrive_v4_split0"
         self.checkpoint_manifest = args.source_worldengine_root / (
             "experiments/diffusiondrive/grpo_selector_v3_rare_original_v1/models/rare_tuned/seed0/checkpoint_manifest.json")
+        self.cv_lineage = validate_cv_source(args.pilot_source_run) if args.stage == "cv_continuation" else None
+        if self.cv_lineage is not None and args.gpu_hours > self.cv_lineage["remaining_gpu_hours"] + 1e-9:
+            raise RuntimeError("CV continuation GPU budget exceeds frozen source-run remainder")
         self.inventory = implementation_inventory()
         self.code_sha = hashlib.sha256(json.dumps(self.inventory, sort_keys=True).encode()).hexdigest()
         contract = dict(design_version=c.DESIGN_VERSION, code_sha=self.code_sha, implementation=self.inventory,
@@ -92,6 +170,9 @@ class Runner:
                         source_worldengine_root=str(args.source_worldengine_root.resolve()),
                         noise_namespace=c.NOISE_NAMESPACE, gpu_count=args.gpus,
                         gpu_hour_limit=args.gpu_hours, endpoint="pilot_report", expansion_authorized=False)
+        if self.cv_lineage is not None:
+            contract.update(execution_scope="train_cv_and_report_only",
+                            frozen_pilot_lineage=self.cv_lineage)
         c.locked_json(self.run / "run_contract.json", contract)
         self.ledger_path = self.run / "decision_ledger.json"
         self.ledger = (json.loads(self.ledger_path.read_text()) if self.ledger_path.exists()
@@ -387,8 +468,16 @@ class Runner:
 
     def dispatch(self):
         stage = self.args.stage
-        if stage in {"preflight", "baseline_train", "sentinel", "pilot", "train_cv", "first_phase"}:
+        if stage in {"preflight", "baseline_train", "sentinel", "pilot", "train_cv",
+                     "first_phase", "cv_continuation"}:
             self.preflight()
+        if stage == "cv_continuation":
+            link_cv_inputs(self.run, self.cv_lineage)
+            self.train_cv()
+            self.python(SCRIPT / "report_selector_cfpi.py",
+                        ["report", "--run-root", self.run], stage="pilot_report")
+            self.record(stage, "COMPLETE", "CV-only continuation complete; no expansion authorized")
+            return
         if stage == "source":
             self.prepare("source")
         if stage in {"baseline_train", "first_phase"}:
@@ -418,10 +507,13 @@ def main():
     parser.add_argument("--gpus", type=int, default=8, choices=(1, 2, 4, 8))
     parser.add_argument("--gpu-hours", type=float, default=144)
     parser.add_argument("--source-worldengine-root", type=Path, default=CANONICAL)
+    parser.add_argument("--pilot-source-run", type=Path)
     args = parser.parse_args()
     if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.run_id)
             or not math.isfinite(args.gpu_hours) or args.gpu_hours <= 0):
         parser.error("Invalid run ID or GPU budget")
+    if (args.stage == "cv_continuation") != (args.pilot_source_run is not None):
+        parser.error("--pilot-source-run is required only for cv_continuation")
     runner = Runner(args)
     try:
         runner.dispatch()

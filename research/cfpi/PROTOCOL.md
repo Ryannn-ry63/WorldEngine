@@ -95,6 +95,11 @@ residual 初始化与 base logits 相加。该初始化差异显式记录，不�
 incumbent sentinel、全部 target 的 incumbent 返回、repeat8 完整反馈。
 数组 max_abs <=1e-5，动作 <=1e-4，返回 <=1e-3；
 NC/DAC、success 与首次违规时刻要求分类一致。NaN、缺失候选不得补零。
+上述 1e-5 继续用于同路径的采集数组。2026-09-06 CV 启动前发现，H100 完整规划头
+缓存 logits 与独立加载 selector 重算的 1,280 个 float32 值最大差为 4.34e-5，
+但 64/64 argmax 一致。因此跨执行路径重算单列门槛为 max_abs <=1e-4 且
+argmax 必须逐场景完全一致；不改变采集 gate、Q 标签、折分、方法或排序规则。
+修复只能在引用冻结 r2 cache SHA 的新 CV continuation run 中执行，不能改写 r2 合同。
 
 信息：64 中至少 16 个满足 max(Q)-Q_incumbent >0.02，才授权训练 CV。
 不满足只表示该 pilot 未达到采集推进门槛，不证明任务无选择空间。

@@ -466,6 +466,69 @@ def test_train_rejects_gate_for_different_cache(tmp_path):
         trainer.train(SimpleNamespace(cache_audit=audit, pilot_gate=gate, cache=path))
 
 
+def test_incumbent_recompute_has_separate_numeric_and_exact_decision_gates(monkeypatch):
+    rows = [dict(scene_id=f"scene-{i}", v3_logits=np.array([1., 0.], dtype=np.float32))
+            for i in range(3)]
+    monkeypatch.setattr(model_api, "score", lambda *args, **kwargs:
+                        torch.tensor([[1.00005, 0.]] * 3))
+    passed = trainer.validate_incumbent_recompute(object(), rows, "cpu")
+    assert passed["max_abs"] < c.MODEL_RECOMPUTE_TOLERANCE
+    assert passed["argmax_mismatch_count"] == 0
+    monkeypatch.setattr(model_api, "score", lambda *args, **kwargs:
+                        torch.tensor([[1.0002, 0.]] * 3))
+    with pytest.raises(RuntimeError, match="max_abs"):
+        trainer.validate_incumbent_recompute(object(), rows, "cpu")
+    rows[0]["v3_logits"] = np.array([0.5, 0.5], dtype=np.float32)
+    monkeypatch.setattr(model_api, "score", lambda *args, **kwargs:
+                        torch.tensor([[0.49999, 0.50001], [1., 0.], [1., 0.]]))
+    with pytest.raises(RuntimeError, match="argmax_mismatch_count"):
+        trainer.validate_incumbent_recompute(object(), rows, "cpu")
+
+
+def test_cv_continuation_lineage_links_only_verified_frozen_inputs(tmp_path):
+    _, pilot = synthetic_cache(tmp_path)
+    pilot["collection_code_sha"] = "c" * 64
+    source = tmp_path / "source_run"
+    cache_dir = source / "cache"
+    pilot_path = cache_dir / "pilot64_cache.pkl"
+    repeat_path = cache_dir / "repeat8_cache.pkl"
+    c.atomic_pickle(pilot_path, pilot)
+    repeat = dict(pilot, stage="repeat8", num_rows=8, rows=pilot["rows"][:8])
+    c.atomic_pickle(repeat_path, repeat)
+    c.atomic_json(cache_dir / "pilot64_cache_audit.json",
+                  dict(status="PASS", cache_file=str(pilot_path),
+                       cache_file_sha256=c.sha256_file(pilot_path)))
+    c.atomic_json(cache_dir / "repeat8_cache_audit.json",
+                  dict(status="PASS", cache_file=str(repeat_path),
+                       cache_file_sha256=c.sha256_file(repeat_path)))
+    c.atomic_json(source / "run_contract.json",
+                  dict(code_sha="c" * 64, design_version=c.DESIGN_VERSION, gpu_hour_limit=10.0))
+    c.atomic_json(source / "decision_ledger.json",
+                  dict(active=None, gpu_hours_used=4.25, development_consumed=False,
+                       test_consumed=False, expansion_authorized=False))
+    c.atomic_json(source / "pilot_gate.json",
+                  dict(status="PASS", training_authorized=True, information_gate_pass=True,
+                       expansion_authorized=False, development_consumed=False, test_consumed=False,
+                       cache_sha256=c.sha256_file(pilot_path),
+                       repeat_cache_sha256=c.sha256_file(repeat_path),
+                       improvable_above_0p02=20, repeat_max_absolute_error=0.0))
+    lineage = runner.validate_cv_source(source)
+    assert lineage["remaining_gpu_hours"] == 5.75
+    target = tmp_path / "continuation"
+    runner.link_cv_inputs(target, lineage)
+    assert (target / "pilot_gate.json").is_symlink()
+    assert (target / "cache/pilot64_cache.pkl").resolve() == pilot_path.resolve()
+    assert runner.validate_cv_source(source) == lineage
+    runner.link_cv_inputs(target, lineage)
+    changed = json.loads((source / "pilot_gate.json").read_text())
+    changed["cache_sha256"] = "wrong"
+    c.atomic_json(source / "pilot_gate.json", changed)
+    with pytest.raises(RuntimeError, match="lineage drifted"):
+        runner.validate_cv_source(source)
+    with pytest.raises(RuntimeError, match="changed before linking"):
+        runner.link_cv_inputs(target, lineage)
+
+
 def test_historical_exposure_membership_only(tmp_path):
     logs = {"log-a", "log-b"}
     splits = {}
