@@ -345,12 +345,18 @@ class BaseEnv:
                 bool(self.config.get('diffusiondrive_preaction_oracle', False)),
                 bool(self.config.get('diffusiondrive_v4_causal_cache', False)),
                 bool(self.config.get('diffusiondrive_cfpi_causal_cache', False)),
+                bool(self.config.get('diffusiondrive_cfpi_deployment', False)),
             )
             if sum(diagnostic_managers) > 1:
                 raise ValueError(
-                    "CCV, pre-action oracle and V4 causal-cache managers are mutually exclusive"
+                    "DiffusionDrive diagnostic and deployment managers are mutually exclusive"
                 )
-            if self.config.get('diffusiondrive_cfpi_causal_cache', False):
+            if self.config.get('diffusiondrive_cfpi_deployment', False):
+                from worldengine.manager.diffusiondrive_cfpi_deployment_manager import (
+                    DiffusionDriveCFPIDeploymentManager,
+                )
+                reward_manager = DiffusionDriveCFPIDeploymentManager()
+            elif self.config.get('diffusiondrive_cfpi_causal_cache', False):
                 from worldengine.manager.diffusiondrive_cfpi_cache_manager import (
                     DiffusionDriveCFPICausalCacheManager,
                 )

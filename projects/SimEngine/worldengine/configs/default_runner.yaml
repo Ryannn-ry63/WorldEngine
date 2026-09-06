@@ -164,6 +164,10 @@ diffusiondrive_ccv_treatment_manifest_sha256: none
 # V4-only method-neutral causal cache collection. Defaults are inert.
 diffusiondrive_v4_causal_cache: false
 diffusiondrive_cfpi_causal_cache: false
+# Continuous deployment has no candidate reward computation or action override.
+diffusiondrive_cfpi_deployment: false
+diffusiondrive_cfpi_deployment_manifest: null
+diffusiondrive_cfpi_deployment_manifest_sha256: none
 diffusiondrive_cfpi_intervention_mode: observe_only
 diffusiondrive_cfpi_collection_id: null
 diffusiondrive_cfpi_treatment_manifest: null

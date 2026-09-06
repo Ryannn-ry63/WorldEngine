@@ -111,6 +111,10 @@ def save_diffusiondrive_rollout_sidecar(
     }
     for key in required_shapes:
         payload[key] = np.asarray(context[key])
+    if cfg.get('cfpi_deployment_routing'):
+        if 'cfpi_deployment' not in result:
+            raise RuntimeError('CFPI deployment route audit missing before action publication')
+        payload['cfpi_deployment'] = result['cfpi_deployment']
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -197,6 +201,14 @@ def clean_related_files(cfg, logger):
 
 async def run_inference_loop(model, cfg, logger, rollout_provenance):
     """async run inference loop"""
+    deployment_router = None
+    if cfg.get('cfpi_deployment_routing'):
+        from selector_cfpi_deployment_router import DeploymentRouter
+        if rollout_provenance['checkpoint_sha256'] != cfg.selector_rollout_contract.expected_checkpoint_sha256:
+            raise RuntimeError('CFPI deployment loaded the wrong shared frozen checkpoint')
+        deployment_router = DeploymentRouter(
+            cfg.cfpi_deployment_routing, cfg.cfpi_deployment_routing_sha256,
+            model.module.planning_head._expand_to_40)
     MONITORED_FOLDER = cfg.sim.monitored_folder
     logger.info(f"MONITORED_FOLDER: {MONITORED_FOLDER}")
     stop_file_path = os.path.join(os.path.dirname(cfg.data_root.rstrip('/')), 'simulation_completed.flag')
@@ -253,6 +265,8 @@ async def run_inference_loop(model, cfg, logger, rollout_provenance):
 
             result_list = model_inference(model, data_loader)
             result = result_list[0] # TODO: need to save reward_dict, especially values
+            if deployment_router is not None:
+                result = deployment_router.apply(result, file_monitor.prefix, cfg.queue_length + scene_step)
             if 'value' in result.keys():
                 value = result['value']
             else:
