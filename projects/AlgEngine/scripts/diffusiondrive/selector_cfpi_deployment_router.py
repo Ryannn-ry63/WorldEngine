@@ -11,8 +11,12 @@ import selector_cfpi_deployment_common as d
 
 def load_bank(entry):
     path = d.verify(entry)
-    if entry["kind"] == "cfpi":
-        model, payload = models.load_selector(path)
+    if entry["kind"] in {"cfpi", "rare"}:
+        if entry["kind"] == "rare":
+            from selector_rare_model import load
+            model, payload = load(path)
+        else:
+            model, payload = models.load_selector(path)
         if payload["score_mode"] != entry["score_mode"]:
             raise RuntimeError("Selector score semantics changed")
         provenance = payload["provenance"]

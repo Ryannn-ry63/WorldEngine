@@ -52,7 +52,13 @@ def charge(ledger, phase, seconds, gpus):
 
 
 def check_budget(ledger, phase, total, reserve=0.0):
-    if ledger["gpu_hours_used"] + reserve >= total or ledger["phase_gpu_hours"][phase] + reserve >= d.PHASE_LIMITS[phase]:
+    limits = ledger.get("phase_limits", d.PHASE_LIMITS)
+    # Rare protocol shares one explicit failure/time buffer across its phases.
+    buffer = limits.get("buffer", 0.0)
+    other_excess = sum(max(0.0, used-limits[key]) for key,used in ledger["phase_gpu_hours"].items()
+                       if key not in (phase, "buffer"))
+    phase_limit = limits[phase] + max(0.0, buffer-other_excess)
+    if ledger["gpu_hours_used"] + reserve >= total or ledger["phase_gpu_hours"][phase] + reserve >= phase_limit:
         raise RuntimeError(f"GPU-hour budget reached ({phase}); no expansion or budget reset authorized")
 
 
@@ -246,7 +252,7 @@ class Runner(PilotRunner):
                         stage=collection_id + "_config", env=env, timeout=300)
             command = [env["SIMENGINE_PYTHON"], self.sim / "worldengine/runner/run_simulation.py",
                 "debug_mode=True", "debug_scene_name=null", f"data_file_path={contract['scenario']['path']}",
-                f"asset_folder_path={self.args.source_worldengine_root}/data/sim_engine/assets/navtrain/assets",
+                f"asset_folder_path={contract.get('asset_folder', str(self.args.source_worldengine_root) + '/data/sim_engine/assets/navtrain/assets')}",
                 f"output_dir={root}/__WORKER_ID__/WE_output", f"job_name=cfpi_deploy_{collection_id}",
                 "use_planner_actions=true", "ego_policy=env_input_policy", "ego_client=navformer_client",
                 "ego_controller=log_play_controller", "ego_navigation=trajectory_navigation",

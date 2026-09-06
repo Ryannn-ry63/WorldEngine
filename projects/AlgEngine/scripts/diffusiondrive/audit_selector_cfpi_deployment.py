@@ -70,6 +70,15 @@ def validate_sidecar(sidecar, collection, routing, code_sha, *, allow_terminal=F
     if any(audit.get(k) != v for k, v in expected.items()):
         raise RuntimeError(f"Deployment frame routing/provenance mismatch: {scene}/{step}")
     contract = sidecar.get("selector_rollout_contract", {})
+    if collection.get("research_method") == "selector_rare_retention_v1":
+        cohort = collection["cohort"]
+        if (contract.get("research_method") != "selector_rare_retention_v1"
+                or contract.get("source_data_split") != cohort
+                or contract.get("development_consumed") != (cohort == "development")
+                or contract.get("test_consumed") != (cohort == "confirmation")
+                or contract.get("legacy_exposed_benchmark") is not True
+                or contract.get("independent_unseen_test") is not False):
+            raise RuntimeError("Rare evaluation exposure/cohort metadata changed")
     if (contract.get("experiment") != d.METHOD or
             contract.get("deployment_routing_sha256") != collection["routing"]["sha256"] or
             contract.get("rollout_implementation_sha256") != code_sha or
@@ -95,6 +104,12 @@ def validate_sidecar(sidecar, collection, routing, code_sha, *, allow_terminal=F
                 error > c.MODEL_RECOMPUTE_TOLERANCE or selected != audit["incumbent_index"]):
             raise RuntimeError("Same-model routing sentinel parity failed")
     target = collection["audit_targets"].get(scene)
+    initial = collection.get("initial_contexts", {}).get(scene)
+    if initial and step == 4:
+        original = c.load_pickle(d.verify(initial))
+        error = max(r15.max_abs_error(values[k] if k != "current_logits" else incumbent_logits, original[k]) for k in SHAPES)
+        if error > c.ARRAY_TOLERANCE:
+            raise RuntimeError(f"Bridge initial context drift: {scene}: {error}")
     prefix_error, target_checked = None, False
     if target and str(step) in target["prefix"]:
         original = c.load_pickle(d.verify(target["prefix"][str(step)]))
