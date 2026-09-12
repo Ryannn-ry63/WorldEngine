@@ -94,7 +94,7 @@ class DeploymentRouter:
         elif model_key is not None:
             raise RuntimeError("Missing active selector bank entry")
         intervention = None
-        if self.manifest.get('research_method') == 'selector_feedback_repair_v2':
+        if self.manifest.get('research_method') in ('selector_feedback_repair_v2', 'selector_decision_feedback_v1'):
             from selector_feedback_transport import apply_intervention
             selected, intervention = apply_intervention(
                 result, route, int(decision), selected, self.expand, self.device)

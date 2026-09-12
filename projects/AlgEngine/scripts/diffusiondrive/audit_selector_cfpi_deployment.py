@@ -90,7 +90,7 @@ def validate_sidecar(sidecar, collection, routing, code_sha, *, allow_terminal=F
         raise RuntimeError("Deployment sidecar/full-planner contract changed")
     values = {k: c.checked_array(sidecar[k], shape, k) for k, shape in SHAPES.items()}
     forced = False
-    if collection.get('research_method') == 'selector_feedback_repair_v2':
+    if collection.get('research_method') in ('selector_feedback_repair_v2', 'selector_decision_feedback_v1'):
         from selector_feedback_transport import validate_feedback
         forced = validate_feedback(sidecar,collection,route)
     selected = int(sidecar['selected_index']) if forced else int(np.argmax(values["current_logits"]))
@@ -207,7 +207,9 @@ def audit_collection(path, *, merge=True):
         terminal_publications.append(dict(row, worker=worker))
         plans[(sidecar["scene_prefix"], d.TERMINAL_PUBLICATION)] = row["selected_index"]
         artifacts.extend((d.artifact(sidecar_path), d.artifact(plan_path)))
-    if len(workers) != contract["gpu_count"]:
+    expected_workers = (collection['worker_count'] if collection.get('research_method') ==
+                        'selector_decision_feedback_v1' else contract["gpu_count"])
+    if not 1 <= expected_workers <= contract['gpu_count'] or workers != {f'split_{i}' for i in range(expected_workers)}:
         raise RuntimeError("Unexpected rollout worker coverage")
     seen_plans = {}
     for plan_csv in root.glob("split_*/plan_traj/plan_idx.csv"):

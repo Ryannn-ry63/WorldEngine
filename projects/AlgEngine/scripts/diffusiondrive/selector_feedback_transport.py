@@ -27,6 +27,10 @@ def apply_intervention(result, route, decision, natural, expand, device):
     check_prefix(context,target,decision,natural)
     if decision != target['decision_step']:
         return natural, None
+    if target.get('no_intervention'):
+        if natural != target['visiting_index'] or target.get('sentinel') is not False:
+            raise RuntimeError('Invalid hybrid no-replacement reference')
+        return natural, None
     forced = target['forced_index']
     if type(forced) is not int or not 0<=forced<20:
         raise RuntimeError('Intervention candidate outside original20')
@@ -50,21 +54,29 @@ def validate_feedback(sidecar, collection, route):
         raise RuntimeError('Invalid feedback react_type')
     contract = sidecar['selector_rollout_contract']
     cohort = collection['cohort']
-    expected = dict(research_method=f.METHOD,react_type=mode,source_data_split=cohort,
+    method = collection.get('research_method')
+    if method not in f.TRANSPORT_METHODS:
+        raise RuntimeError('Unknown feedback transport method')
+    expected = dict(research_method=method,react_type=mode,source_data_split=cohort,
                     development_consumed=cohort=='development',test_consumed=False,
                     legacy_exposed_benchmark=True,independent_unseen_test=False)
     if any(contract.get(k)!=v for k,v in expected.items()):
         raise RuntimeError('Feedback mode/exposure contract drift')
     target = route.get('feedback_target')
+    if target and target.get('no_intervention') and method != 'selector_decision_feedback_v1':
+        raise RuntimeError('Hybrid reference is not part of the legacy protocol')
     if target and cohort!='train':
         raise RuntimeError('Interventions forbidden on evaluation scenes')
     step, selected = int(sidecar['planner_step']), int(sidecar['selected_index'])
     intervention = sidecar['cfpi_deployment'].get('feedback_intervention')
-    if not target or step != target['decision_step']:
+    if not target or step != target['decision_step'] or target.get('no_intervention'):
         if intervention is not None:
             raise RuntimeError('Unscheduled or repeated intervention')
         if target:
             check_prefix(sidecar,target,step,selected)
+            if step == target['decision_step'] and (
+                    selected != target['visiting_index'] or target.get('sentinel') is not False):
+                raise RuntimeError('Hybrid reference replaced target action')
         return False
     check_prefix(sidecar,target,step)
     natural = int(np.asarray(sidecar['current_logits']).argmax())

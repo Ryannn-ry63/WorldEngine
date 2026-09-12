@@ -244,7 +244,16 @@ class Runner(PilotRunner):
                    DIFFUSIONDRIVE_CFPI_DEPLOYMENT_COLLECTION_ID=collection_id,
                    DIFFUSIONDRIVE_CFPI_DEPLOYMENT_ROUTING=contract["routing"]["path"],
                    DIFFUSIONDRIVE_CFPI_DEPLOYMENT_ROUTING_SHA256=contract["routing"]["sha256"])
-        if contract.get('research_method') == 'selector_feedback_repair_v2':
+        decision_feedback = contract.get('research_method') == 'selector_decision_feedback_v1'
+        worker_count = contract['worker_count'] if decision_feedback else self.args.gpus
+        if not 1 <= worker_count <= self.args.gpus:
+            raise RuntimeError('Invalid collection worker count')
+        if decision_feedback:
+            worker_devices = self.env['CUDA_VISIBLE_DEVICES'].split(',')[:worker_count]
+            env.update(CUDA_VISIBLE_DEVICES=','.join(worker_devices),
+                       WORLDENGINE_FEEDBACK_CUDA_DEVICE_MAP=','.join(worker_devices),
+                       DIFFUSIONDRIVE_FEEDBACK_RESEARCH_METHOD=contract['research_method'])
+        if contract.get('research_method') in ('selector_feedback_repair_v2', 'selector_decision_feedback_v1'):
             if d.verified_read(contract['run_contract'])['gpu_count'] != self.args.gpus:
                 raise RuntimeError('Feedback collection GPU count differs from frozen run')
             env.update(DIFFUSIONDRIVE_FEEDBACK_REACT_TYPE=contract['react_type'],
@@ -279,7 +288,7 @@ class Runner(PilotRunner):
                 f"completed_scenarios_dir={root}/__WORKER_ID__/completed_scenarios"]
             jobs = [(command, self.sim, env, root / "logs/worldengine.log")]
             devices = env.get("CUDA_VISIBLE_DEVICES", ",".join(map(str, range(self.args.gpus)))).split(",")
-            if len(devices) != self.args.gpus or len(set(devices)) != self.args.gpus:
+            if len(devices) != worker_count or len(set(devices)) != worker_count:
                 raise RuntimeError(f"CUDA device map does not match {self.args.gpus} distinct workers")
             checkpoint = d.read(self.checkpoint_manifest)["checkpoint"]
             for i, device in enumerate(devices):

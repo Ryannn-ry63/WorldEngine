@@ -25,7 +25,7 @@ class DiffusionDriveCFPIDeploymentManager(BaseManager):
                                                sha256=self.collection_sha))
         self.routing = d.verified_read(self.collection['routing'])
         self.code_sha = d.verified_read(self.collection['run_contract'])['code_sha']
-        if self.collection.get('research_method') == 'selector_feedback_repair_v2':
+        if self.collection.get('research_method') in ('selector_feedback_repair_v2', 'selector_decision_feedback_v1'):
             mode = self.collection['react_type']
             policy,navigation = ('idm_policy','idm_navigation') if mode=='R' else ('trajectory_policy','trajectory_navigation')
             if (mode not in ('NR','R') or cfg['agent_policy']!=policy or cfg['agent_navigation']!=navigation

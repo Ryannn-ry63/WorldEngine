@@ -6,6 +6,7 @@ import numpy as np
 import cfpi_common as c
 
 METHOD = 'selector_feedback_repair_v2'
+TRANSPORT_METHODS = (METHOD, 'selector_decision_feedback_v1')
 MODES = ('NR', 'R')
 ARMS = ('S', 'U', 'T')
 LIMITS = dict(feedback=24., train=4., eval=30., buffer=6.)
