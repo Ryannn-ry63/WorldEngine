@@ -25,6 +25,12 @@ class DiffusionDriveCFPIDeploymentManager(BaseManager):
                                                sha256=self.collection_sha))
         self.routing = d.verified_read(self.collection['routing'])
         self.code_sha = d.verified_read(self.collection['run_contract'])['code_sha']
+        if self.collection.get('research_method') == 'selector_feedback_repair_v2':
+            mode = self.collection['react_type']
+            policy,navigation = ('idm_policy','idm_navigation') if mode=='R' else ('trajectory_policy','trajectory_navigation')
+            if (mode not in ('NR','R') or cfg['agent_policy']!=policy or cfg['agent_navigation']!=navigation
+                    or cfg['ego_controller']!='log_play_controller' or cfg['ego_policy']!='env_input_policy'):
+                raise RuntimeError('Actual simulator mode/controller differs from feedback contract')
         if cfg['num_history'] != 4 or cfg['num_future'] != 8 or cfg['reward_buffer_size'] != 9:
             raise RuntimeError("Deployment freezes decisions 4..11 at 0.5-second replanning")
 

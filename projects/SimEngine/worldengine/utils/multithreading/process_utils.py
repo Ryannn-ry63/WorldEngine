@@ -8,6 +8,15 @@ def get_process_id() -> str:
     import ray
     if ray.is_initialized():
         gpu_ids = ray.get_gpu_ids()
+        # Feedback planner folders use logical split_0..N-1, while Ray returns
+        # physical IDs (or UUIDs) from the parent's CUDA_VISIBLE_DEVICES map.
+        feedback_map = os.environ.get('WORLDENGINE_FEEDBACK_CUDA_DEVICE_MAP')
+        if feedback_map is not None:
+            devices = [x.strip() for x in feedback_map.split(',')]
+            if (len(gpu_ids)!=1 or str(gpu_ids[0]) not in devices
+                    or len(set(devices))!=len(devices) or any(not x for x in devices)):
+                raise RuntimeError('Feedback Ray GPU assignment does not match logical worker map')
+            return str(devices.index(str(gpu_ids[0])))
         if len(gpu_ids) > 0:
             return str(gpu_ids[0])
 

@@ -93,6 +93,11 @@ class DeploymentRouter:
             context["selected_indices"] = np.asarray(selected, dtype=np.int64)
         elif model_key is not None:
             raise RuntimeError("Missing active selector bank entry")
+        intervention = None
+        if self.manifest.get('research_method') == 'selector_feedback_repair_v2':
+            from selector_feedback_transport import apply_intervention
+            selected, intervention = apply_intervention(
+                result, route, int(decision), selected, self.expand, self.device)
         result["cfpi_deployment"] = dict(
             schema_version=1, routing_sha256=self.manifest_sha256,
             terminal_unexecuted=(int(decision) == d.TERMINAL_PUBLICATION),
@@ -103,4 +108,6 @@ class DeploymentRouter:
             incumbent_index=incumbent_index, incumbent_logits=incumbent_logits.tolist(),
             selected_index=selected, same_model_recompute_max_abs=recompute_error,
             generator_forward_count=1, inference_uses_reward_or_q=False)
+        if intervention is not None:
+            result['cfpi_deployment']['feedback_intervention'] = intervention
         return result

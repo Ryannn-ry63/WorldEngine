@@ -23,6 +23,8 @@ def checked_collection(entry):
     for item in audit["artifacts"]:
         d.verify(item)
     routing = d.verified_read(collection["routing"])
+    for model in routing['models'].values():
+        d.verify(model)
     metrics = d.metrics_csv(d.verify(audit["merged_metrics"]), {r["scene_id"] for r in routing["routes"]})
     if metrics != audit["metrics"]:
         raise RuntimeError("Audited metric values changed")

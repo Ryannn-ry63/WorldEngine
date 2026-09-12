@@ -244,6 +244,14 @@ class Runner(PilotRunner):
                    DIFFUSIONDRIVE_CFPI_DEPLOYMENT_COLLECTION_ID=collection_id,
                    DIFFUSIONDRIVE_CFPI_DEPLOYMENT_ROUTING=contract["routing"]["path"],
                    DIFFUSIONDRIVE_CFPI_DEPLOYMENT_ROUTING_SHA256=contract["routing"]["sha256"])
+        if contract.get('research_method') == 'selector_feedback_repair_v2':
+            if d.verified_read(contract['run_contract'])['gpu_count'] != self.args.gpus:
+                raise RuntimeError('Feedback collection GPU count differs from frozen run')
+            env.update(DIFFUSIONDRIVE_FEEDBACK_REACT_TYPE=contract['react_type'],
+                       DIFFUSIONDRIVE_FEEDBACK_COHORT=contract['cohort'])
+        mode = contract.get('react_type','R')
+        if mode not in ('NR','R'):
+            raise RuntimeError('Unknown collection mode')
         if not (root / "collection_audit.json").exists():
             archived = archive_incomplete_collection(root)
             if archived:
@@ -256,7 +264,8 @@ class Runner(PilotRunner):
                 f"output_dir={root}/__WORKER_ID__/WE_output", f"job_name=cfpi_deploy_{collection_id}",
                 "use_planner_actions=true", "ego_policy=env_input_policy", "ego_client=navformer_client",
                 "ego_controller=log_play_controller", "ego_navigation=trajectory_navigation",
-                "agent_policy=idm_policy", "agent_navigation=idm_navigation",
+                "agent_policy=" + ('idm_policy' if mode=='R' else 'trajectory_policy'),
+                "agent_navigation=" + ('idm_navigation' if mode=='R' else 'trajectory_navigation'),
                 f"planner_data_path={root}/__WORKER_ID__/plan_traj", f"planner_client_folder={root}/__WORKER_ID__/frames",
                 "with_metric_manager=true", "with_dense_reward_manager=true", "diffusiondrive_cfpi_deployment=true",
                 "diffusiondrive_cfpi_causal_cache=false", "diffusiondrive_v4_causal_cache=false",
@@ -271,7 +280,7 @@ class Runner(PilotRunner):
             jobs = [(command, self.sim, env, root / "logs/worldengine.log")]
             devices = env.get("CUDA_VISIBLE_DEVICES", ",".join(map(str, range(self.args.gpus)))).split(",")
             if len(devices) != self.args.gpus or len(set(devices)) != self.args.gpus:
-                raise RuntimeError("CUDA device map does not match 8 distinct workers")
+                raise RuntimeError(f"CUDA device map does not match {self.args.gpus} distinct workers")
             checkpoint = d.read(self.checkpoint_manifest)["checkpoint"]
             for i, device in enumerate(devices):
                 worker = root / f"split_{i}"
@@ -285,7 +294,8 @@ class Runner(PilotRunner):
                        "sim.clean_temp_files=False", "sim.clean_record_data=False",
                        f"data_root={worker}/WE_output/openscene_format/"]
                 jobs.append((cmd, self.alg, dict(env, CUDA_VISIBLE_DEVICES=device), root / f"logs/planner_split{i}.log"))
-            self.execute(jobs, collection_id, gpus=self.args.gpus)
+            self.execute(jobs, collection_id, gpus=self.args.gpus,
+                         timeout=getattr(self,'collection_timeout',21600))
         self.python(SCRIPT / "audit_selector_cfpi_deployment.py", ["--collection", path],
                     stage=collection_id + "_audit", env=env)
 

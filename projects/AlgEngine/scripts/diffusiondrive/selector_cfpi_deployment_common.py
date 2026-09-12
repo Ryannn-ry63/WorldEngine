@@ -81,6 +81,8 @@ def route_for(manifest, scene_prefix, decision, *, allow_terminal=False):
     if len(matches) != 1:
         raise RuntimeError(f"Unknown/ambiguous deployment scene: {scene_prefix}")
     route = matches[0]
+    if "feedback_target" in route and decision > route["feedback_target"]["decision_step"]:
+        route = dict(route, model_key=route["continuation_model_key"])
     return route, decision >= route["start_decision"]
 
 

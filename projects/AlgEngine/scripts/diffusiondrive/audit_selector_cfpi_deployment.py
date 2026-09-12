@@ -89,7 +89,11 @@ def validate_sidecar(sidecar, collection, routing, code_sha, *, allow_terminal=F
             sidecar.get("code_sha") != code_sha):
         raise RuntimeError("Deployment sidecar/full-planner contract changed")
     values = {k: c.checked_array(sidecar[k], shape, k) for k, shape in SHAPES.items()}
-    selected = int(np.argmax(values["current_logits"]))
+    forced = False
+    if collection.get('research_method') == 'selector_feedback_repair_v2':
+        from selector_feedback_transport import validate_feedback
+        forced = validate_feedback(sidecar,collection,route)
+    selected = int(sidecar['selected_index']) if forced else int(np.argmax(values["current_logits"]))
     if any(int(value) != selected for value in (sidecar["selected_index"], sidecar["selected_indices"], audit["selected_index"])):
         raise RuntimeError("Published selector index differs from actual score argmax")
     incumbent_logits = c.checked_array(audit["incumbent_logits"], (20,), "incumbent logits")
@@ -220,7 +224,10 @@ def audit_collection(path, *, merge=True):
         raise RuntimeError("Missing planner CSV decisions")
     metrics = {}
     for worker in sorted(workers):
-        metric_path = root / worker / "WE_output/openscene_format/all_scenes_pdm_averages_R.csv"
+        mode = collection.get('react_type','R')
+        if mode not in ('NR','R'):
+            raise RuntimeError('Unknown metric mode')
+        metric_path = root / worker / f"WE_output/openscene_format/all_scenes_pdm_averages_{mode}.csv"
         subset = d.metrics_csv(metric_path)
         if metrics.keys() & subset.keys():
             raise RuntimeError("Duplicate metric scene across workers")
