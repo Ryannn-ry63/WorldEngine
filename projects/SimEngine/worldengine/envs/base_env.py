@@ -339,6 +339,11 @@ class BaseEnv:
             self.engine.register_manager('data_manager', DataManager())
         if self.config.with_metric_manager:
             self.engine.register_manager('metric_manager', MetricManager())
+        if self.config.get('selector_snapshot', False):
+            if self.config.with_dense_reward_manager:
+                raise ValueError('Native snapshot cannot enable reward/intervention managers')
+            from worldengine.manager.selector_snapshot_manager import SelectorSnapshotManager
+            self.engine.register_manager('selector_snapshot_observer', SelectorSnapshotManager())
         if self.config.with_dense_reward_manager:
             diagnostic_managers = (
                 bool(self.config.get('diffusiondrive_candidate_sweep', False)),

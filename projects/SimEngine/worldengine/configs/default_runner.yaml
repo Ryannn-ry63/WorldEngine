@@ -166,6 +166,9 @@ diffusiondrive_v4_causal_cache: false
 diffusiondrive_cfpi_causal_cache: false
 # Continuous deployment has no candidate reward computation or action override.
 diffusiondrive_cfpi_deployment: false
+selector_snapshot: false
+selector_snapshot_manifest: null
+selector_snapshot_manifest_sha256: null
 diffusiondrive_cfpi_deployment_manifest: null
 diffusiondrive_cfpi_deployment_manifest_sha256: none
 diffusiondrive_cfpi_intervention_mode: observe_only
