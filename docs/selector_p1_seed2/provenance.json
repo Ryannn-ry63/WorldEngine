@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "evaluated_code_commit": "8f1df15",
+  "evaluated_code_sha256": "47923e3578fce3aa6e12c6e76f8242234e1748e6feae653aff88737017f17618",
+  "run_id": "p1_seed2_full_20260913_v1",
+  "run_root": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1",
+  "training_source_run": "/inspire/hdd/global_user/wangcaojun-240208020180/nry/WorldEngine/experiments/worktrees/WorldEngine-selector-decision-feedback-v1/experiments/diffusiondrive/selector_decision_feedback_v1/runs/decision_feedback_20260912_192h_v1",
+  "formal_noise": "formal_navtest_seed0",
+  "checkpoint_artifacts": {
+    "P1_seed2": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/models/P1_seed2/checkpoint.pth",
+      "sha256": "7895612dc85c35ee2856f1cd5238ed2947424a5b952b83fd0977e6ed0e912f60"
+    },
+    "scalar_v3": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/models/scalar_v3/checkpoint.pth",
+      "sha256": "bd35f0293c878c6cddb985ac0b8aaae91d4f7f8e0bf2c3bf70ba49ba329c02a3"
+    }
+  },
+  "local_archive": {
+    "source_selector": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/archive/selector/step_500.pt",
+      "sha256": "331ac4459cef19febff865080e3015f955cae0d2ebbd04bed58e207b2b8ebc6b"
+    },
+    "optimizer_rng_resume": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/archive/resume/segment_500_resume.pt",
+      "sha256": "6b4e4b012a4390953328ac78404df08df23d0811599dbfae7f392cd2f2680b97"
+    },
+    "summary": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/summary.json",
+      "sha256": "666cc89cf68b91305d33903036cc58031241a13b793555a61bfe3115266dd5c1"
+    },
+    "release_manifest": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/archive/release_manifest.json",
+      "sha256": "a5cbc8bf17ae3ebd8b6d42aa38fbdc2f4b0cdc5225ca40bd6db2a68457917871"
+    },
+    "run_contract": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/run_contract.json",
+      "sha256": "20d440d113fc696b34d980178f0800c07d48abfe10e8ba27571097918b888440"
+    },
+    "code_archive_manifest": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/archive/code_manifest.json",
+      "sha256": "c3ba510138f9af3ea5d6cdd4696bbb362543b7619c51565a90984f6b5ac7f544"
+    },
+    "paired_scenes": {
+      "path": "experiments/diffusiondrive/selector_p1_snapshot_v1/runs/p1_seed2_full_20260913_v1/paired_scenes.csv",
+      "sha256": "ac4c78685f6c9c75352ade1c65cb8434e961c62f72b7eb2b58d5309fc9918d00"
+    }
+  },
+  "evaluation_complete": true,
+  "formal_conditions": 12,
+  "model_files_in_git": false,
+  "note": "Paths refer to the existing local workspace. Checkpoints and dataset assets must be provisioned separately on a new machine."
+}

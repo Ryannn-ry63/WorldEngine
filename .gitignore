@@ -84,6 +84,8 @@ logs/
 .env.local
 
 # Temporary files
+# Native evaluator scratch output; preserve locally, exclude from Git.
+/projects/AlgEngine/tmp/
 *.tmp
 *.bak
 *.swp

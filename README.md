@@ -1,3 +1,8 @@
+> **This fork: P1 seed2 selector snapshot (2026-09-13).**
+> [Code guide, completed evaluation and reproduction notes](docs/selector_p1_seed2/README.md).
+> Full rare288 closed-loop PDM: NR **0.795172**, R **0.802759**; paired V3: 0.776398 / 0.767742.
+> The linked report includes safety metrics and observed regressions. Upstream WorldEngine documentation follows.
+
 <div align="center">
 <img src="https://raw.githubusercontent.com/OpenDriveLab/opendrivelab.github.io/refs/heads/master/WorldEngine/imgs/WE_title.png" width="800px">
 
