@@ -55,6 +55,7 @@
 
 
 ## News
+- **[2026/09/15]** Stable checkpoints released.
 - **[2026/06/19]** Paper released on arXiv. See [World Engine: Towards the Era of Post-Training for Autonomous Driving](https://arxiv.org/abs/2606.19836).
 - **[2026/04/09]** Official dataset released. See [OpenDriveLab/WorldEngine](https://huggingface.co/datasets/OpenDriveLab/WorldEngine) or [OpenDriveLab/WorldEngine (ModelScope)](https://www.modelscope.cn/datasets/OpenDriveLab/WorldEngine)
 - **[2026/04/10]** Official code repository established.
@@ -65,15 +66,16 @@
 We compare different post-training paradigms on the nuPlan dataset, evaluating on both open-loop and closed-loop metrics across common and rare driving scenarios.
 
 > **Metric notes:**
-> **Early stage**. Stable ckpts and corresponding results coming soon.
 > - **Open-loop PDMS** is aligned with [NAVSIM v1.1](https://github.com/autonomousvision/navsim) PDM Score. *Common* denotes the standard `navtest` split; *Rare* denotes the `navtest_failures` subset — failure-prone rare-case scenarios extracted from `navtest`.
-> - **Closed-loop Success Rate** is defined as the fraction of simulated driving episodes completed without collision or off-road failure.
+> - **Closed-loop Success Rate (SR)** is computed as NC × DAC (no-at-fault-collision score × drivable-area compliance score), reported as a percentage.
 > - **Closed-loop Ego Progress (EP)** measures the route progress made by the ego vehicle during **SimEngine closed-loop testing**, reflecting whether the agent makes meaningful forward progress rather than merely avoiding collision or off-road failure.
 > - **Closed-loop PDMS*** is the PDM Score obtained via **SimEngine closed-loop testing**, where the planner interacts with reactive agents in simulation under real-time rendering.
 >
 > **Training notes:**
 > - **Rare logs** are failure-prone scenarios automatically extracted from `navtrain` by the pre-trained agent itself (see [Rare Case Extraction](docs/algengine_usage.md#rare-case-extraction)). 
 > - **Common logs** are the standard cases in `navtrain`.
+
+#### VADv2 (Base Planner)
 
 | Method | Open-loop PDMS ↑ (common) | Open-loop PDMS ↑ (rare) | Closed-loop SR ↑ (rare) | Closed-loop EP ↑ (rare) | Closed-loop PDMS* ↑ (rare) |
 |:-------|:-------------------------:|:-----------------------:|:-----------------------:|:-----------------------:|:--------------------------:|
@@ -89,6 +91,21 @@ We compare different post-training paradigms on the nuPlan dataset, evaluating o
 - Post-training on **rare logs** substantially improves rare open-loop PDMS over supervised fine-tuning (**59.20 vs. 52.55**), but does not improve rare closed-loop SR, indicating that fixed rare logs alone are insufficient for robust interactive behaviour.
 - Post-training on **common logs** provides limited long-tail benefit and degrades rare closed-loop performance, reducing SR from **73.66%** to **69.63%** and PDMS$^\ast$ from **60.98** to **60.21**, confirming the importance of long-tail event discovery.
 - The full WorldEngine pipeline achieves the best overall rare closed-loop performance, with the highest SR (**88.89%**) and PDMS$^\ast$ (**70.12**). It improves rare closed-loop SR by **+15.23** percentage points and PDMS$^\ast$ by **+9.14** over the base model, while maintaining strong common open-loop performance.
+
+#### HydraMDP
+
+The base model and WorldEngine rows match **Table S1** of the paper. Additional ablations follow the selected HydraMDP experiment records: pure IL fine-tuning for the supervised row, and reward shaping enabled, RL fine-tuning enabled, PG = 0.01, entropy = 0 for the RL rows. Closed-loop values use the **reactive** evaluation results.
+
+| Method | Open-loop PDMS ↑ (common) | Open-loop PDMS ↑ (rare) | Closed-loop SR ↑ (rare) | Closed-loop EP ↑ (rare) | Closed-loop PDMS* ↑ (rare) |
+|:-------|:-------------------------:|:-----------------------:|:-----------------------:|:-----------------------:|:--------------------------:|
+| Base model | 93.86 | 69.91 | 75.15 | 62.98 | 68.69 |
+| Supervised fine-tuning on rare logs | 88.49 | 57.43 | 70.77 | 52.81 | 62.74 |
+| Post-training on common logs | 93.90 | 69.64 | 76.61 | 64.80 | 68.70 |
+| Post-training on rare synthetic replays | 93.87 | 69.91 | 74.26 | 62.01 | 67.68 |
+| Post-training on rare rollouts w/o Behaviour WM | 93.78 | 71.59 | 78.57 | 67.60 | 72.06 |
+| **Post-training with WorldEngine** | **93.89** | **72.28** | **81.63** | **67.95** | **74.49** |
+
+WorldEngine improves HydraMDP's rare closed-loop SR by **+6.48** percentage points, EP by **+4.97**, and PDMS$^\ast$ by **+5.80**, matching the gains reported in Table S1.
 
 ### Qualitative Results — Closed-Loop Simulation on nuPlan
 
@@ -138,8 +155,8 @@ WorldEngine consists of two tightly coupled subsystems:
 - [x] Hugging Face / ModelScope dataset
 - [x] Open-source release (code, data, early pre-trained models)
 - [x] arXiv preprint
+- [x] Stable pre-trained models
 - [ ] Behavior World Model integration
-- [ ] Stable pre-trained models
 
 
 ## Getting Started
