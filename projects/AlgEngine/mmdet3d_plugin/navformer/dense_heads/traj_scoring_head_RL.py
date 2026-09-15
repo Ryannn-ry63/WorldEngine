@@ -202,13 +202,16 @@ class TrajScoringHeadRL(nn.Module):
         '''
         EPS = 1e-6
         log_pi = self.compute_log_pi(result, prefix)
-        original_log_pi = self.compute_log_pi(result, 'orig_')
 
         pi = F.softmax(log_pi, dim=-1).clamp(min=EPS)
-        orig_pi = F.softmax(original_log_pi, dim=-1).clamp(min=EPS)
-        IS_ratio = (pi / orig_pi).detach()
-        IS_ratio[gt_pdm_score['fail_mask']] = 1.
-        clipped_IS_ratio = IS_ratio.clamp(max=10)
+        if self.importance_sampling:
+            original_log_pi = self.compute_log_pi(result, 'orig_')
+            orig_pi = F.softmax(original_log_pi, dim=-1).clamp(min=EPS)
+            IS_ratio = (pi / orig_pi).detach()
+            IS_ratio[gt_pdm_score['fail_mask']] = 1.
+            clipped_IS_ratio = IS_ratio.clamp(max=10)
+        else:
+            clipped_IS_ratio = torch.ones_like(pi)
 
         reward_mask = (gt_pdm_score['score'] == 1).float()
 
