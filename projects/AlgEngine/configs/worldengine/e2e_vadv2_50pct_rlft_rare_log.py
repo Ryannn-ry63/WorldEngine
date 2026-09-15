@@ -350,8 +350,7 @@ train_pipeline = [
     ),
 ]
 test_pipeline = [
-    dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True, file_client_args=file_client_args, img_root=img_root_test),
-    dict(type="ScaleMultiViewImage3D", scale=0.5),
+    dict(type="LoadMultiViewImageFromFilesWithDownsample", to_float32=True, img_root=img_root_test, downsample_factor=2),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="PadMultiViewImage", size_divisor=32),
     dict(

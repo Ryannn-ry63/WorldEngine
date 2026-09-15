@@ -37,7 +37,6 @@ queue_length = 3  # each sequence contains `queue_length` frames.
 ## tracking
 past_steps = 3
 fut_steps = 4
-etting
 occ_past = 2    # not including the current frame
 occ_future = 8
 # occ_n_future = 4	
@@ -354,7 +353,7 @@ model = dict(
 )
 
 train_pipeline = [
-    dict(type="LoadMultiViewImageFromFilesInCeph", to_float32=True, file_client_args=file_client_args, img_root=img_root_train),
+    dict(type="LoadMultiViewImageFromFilesWithDownsample", to_float32=True, img_root=img_root_train, downsample_factor=2),
     dict(type="PhotoMetricDistortionMultiViewImage"),
     dict(
         type="LoadAnnotations3D_E2E",
@@ -368,7 +367,6 @@ train_pipeline = [
     dict(type="ObjectRangeFilterTrack", point_cloud_range=point_cloud_range),
     dict(type="ObjectNameFilterTrack", classes=class_names),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
-    dict(type='RandomScaleImageMultiViewImage', scales=[0.5]),
     dict(type="PadMultiViewImage", size_divisor=32),
     dict(type="DefaultFormatBundle3D", class_names=class_names),
     dict(
@@ -418,8 +416,7 @@ train_pipeline = [
     ),
 ]
 test_pipeline = [
-    dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True,
-            file_client_args=file_client_args, img_root=img_root_test),
+    dict(type="LoadMultiViewImageFromFilesWithDownsample", to_float32=True, img_root=img_root_test, downsample_factor=2),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="PadMultiViewImage", size_divisor=32),
     dict(type='LoadAnnotations3D_E2E', 
@@ -436,7 +433,6 @@ test_pipeline = [
         pts_scale_ratio=1,
         flip=False,
         transforms=[
-            dict(type='RandomScaleImageMultiViewImage', scales=[0.5]),
             dict(
                 type="DefaultFormatBundle3D", class_names=class_names, with_label=False
             ),
