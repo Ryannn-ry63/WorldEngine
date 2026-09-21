@@ -70,6 +70,7 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         future_frame_num=8,
         fix_can_bus_rotation=False,
         diffusiondrive_data_mode=False,
+        online_candidate_reward=False,
         map_root=None,
         with_velocity=True,
         use_valid_flag=False,
@@ -86,6 +87,7 @@ class NavSimOpenSceneE2E(Custom3DDataset):
             self.map_root = map_root
         self.fix_can_bus_rotation = fix_can_bus_rotation
         self.diffusiondrive_data_mode = diffusiondrive_data_mode
+        self.online_candidate_reward = online_candidate_reward
         self.nav_filter_path = nav_filter_path
 
         if "navtrain" in os.path.basename(self.nav_filter_path):
@@ -159,6 +161,34 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         elif metric_cache_path:
             logger.warning(f'metric_cache_path does not exist: {metric_cache_path}')
 
+        if self.online_candidate_reward:
+            self._filter_online_candidate_reward_index()
+
+    def _filter_online_candidate_reward_index(self):
+        if not self.metric_cache_dict:
+            raise RuntimeError(
+                "online_candidate_reward requires a non-empty NAVSIM metric cache"
+            )
+        unfiltered_size = len(self.index_map)
+        self.index_map = [
+            index
+            for index in self.index_map
+            if str(self.data_infos[index]["token"]) in self.metric_cache_dict
+        ]
+        self.online_candidate_reward_unfiltered_size = unfiltered_size
+        self.online_candidate_reward_filtered_size = len(self.index_map)
+        if not self.index_map:
+            raise RuntimeError(
+                "online_candidate_reward found no nav-filter tokens in metric cache"
+            )
+        # Custom3DDataset created the sampler flag before this opt-in
+        # filtering step, so rebuild it to keep distributed indices valid.
+        self._set_group_flag()
+        logger.info(
+            "online candidate reward filtered %d frames to %d cache-covered frames",
+            unfiltered_size,
+            len(self.index_map),
+        )
 
     def load_annotations(self, ann_file):
 
@@ -893,7 +923,12 @@ class NavSimOpenSceneE2E(Custom3DDataset):
         input_dict = self.update_sensor(input_dict=input_dict, index=index)
         input_dict = self.update_canbus(input_dict=input_dict, index=index)
 
-        if not prev_frame:
+        if self.online_candidate_reward:
+            # Dynamic-trajectory policies compute one reward per generated
+            # candidate at training time. Do not allocate fixed-vocabulary
+            # PDM arrays on this opt-in path.
+            pass
+        elif not prev_frame:
             # only count for curr frame PDMScore
             input_dict = self.get_pdm_score_info(input_dict, index, info=info)
         else:

@@ -101,3 +101,12 @@ Thumbs.db
 # MMDetection3D work dirs
 work_dirs/
 ckpts/
+# Selector research: never include local runtime artifacts in a contribution.
+/selector.local.json
+/local_data/
+/models/
+/runs/
+/reports/
+/data
+__pycache__/
+*.pyc

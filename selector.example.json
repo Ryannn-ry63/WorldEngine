@@ -1,0 +1,14 @@
+{
+  "algengine_python": "/absolute/algengine/bin/python",
+  "simengine_python": "/absolute/simengine/bin/python",
+  "data_root": "/absolute/read_only_data_view",
+  "baseline": "/absolute/models/diffusiondrive/epoch_100.pth",
+  "navsim_root": "/absolute/navsim_v1",
+  "nuplan_root": "/absolute/nuplan-devkit",
+  "metric_cache_train": "/absolute/cache/trainval",
+  "metric_cache_eval": "/absolute/cache/navtest",
+  "test_images": "/absolute/test/sensor_blobs",
+  "train_images": "/absolute/trainval/sensor_blobs",
+  "anchors": "/absolute/data/alg_engine/kmeans_navsim_traj_20.npy",
+  "extra_python_paths": []
+}

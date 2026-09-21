@@ -110,9 +110,8 @@ def prepare_index(
     shards_dir = output_dir / "shards"
     if shards_dir.exists():
         shutil.rmtree(shards_dir)
-    if num_shards > 1:
-        shard_paths = _write_shard_indexes(output_dir, selected_paths, num_shards)
-        print(f"Prepared {len(shard_paths)} isolated metric-cache shards")
+    shard_paths = _write_shard_indexes(output_dir, selected_paths, num_shards)
+    print(f"Prepared {len(shard_paths)} isolated metric-cache shards")
     print(f"Prepared {len(tokens)} metric-cache entries at {output_path}")
     return output_path
 

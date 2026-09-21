@@ -49,10 +49,11 @@ file_client_args = dict(backend="disk")
 
 # Get WORLDENGINE_ROOT from environment variable
 WORLDENGINE_ROOT = os.getenv('WORLDENGINE_ROOT', os.path.abspath('.'))
-data_root = os.path.join(WORLDENGINE_ROOT, "data/raw/openscene-v1.1/")
-info_root = os.path.join(WORLDENGINE_ROOT, "data/alg_engine/merged_infos_navformer/")
-img_root_train = data_root + "sensor_blobs/trainval"
-img_root_test = data_root + "sensor_blobs/test"
+WORLDENGINE_DATA_ROOT = os.getenv('WORLDENGINE_DATA_ROOT', os.path.join(WORLDENGINE_ROOT, 'data'))
+data_root = os.path.join(WORLDENGINE_DATA_ROOT, "raw/openscene-v1.1/")
+info_root = os.path.join(WORLDENGINE_DATA_ROOT, "alg_engine/merged_infos_navformer/")
+img_root_train = os.getenv("WORLDENGINE_TRAIN_IMAGES", data_root + "sensor_blobs/trainval")
+img_root_test = os.getenv("WORLDENGINE_TEST_IMAGES", data_root + "sensor_blobs/test")
 
 ann_file_train = info_root + "nuplan_openscene_navtrain.pkl"
 ann_file_val = info_root + "nuplan_openscene_navtest.pkl"
@@ -263,7 +264,7 @@ model = dict(
         query_keyval_size=8,                # downsample BEV to 8x8 for the query decoder
         num_anchors=20,                     # DiffusionDrive V2 ego_fut_mode
         num_diff_decoder_layers=2,          # DiffusionDrive V2 stacked DiT layers
-        plan_anchor_path=os.path.join(WORLDENGINE_ROOT, "kmeans_navsim_traj_20.npy"),
+        plan_anchor_path=os.getenv("DIFFUSIONDRIVE_ANCHORS", os.path.join(WORLDENGINE_ROOT, "kmeans_navsim_traj_20.npy")),
         score_mode='recompute',
         bev_h=bev_h_,
         bev_w=bev_w_,
@@ -481,5 +482,5 @@ log_config = dict(
     interval=10, hooks=[dict(type="TextLoggerHook"), dict(type="TensorboardLoggerHook")]
 )
 checkpoint_config = dict(interval=10, max_keep_ckpts=5)
-load_from = os.path.join(WORLDENGINE_ROOT, "data/alg_engine/ckpts/track_map_nuplan_r50_navtrain_100pct_bs1x8.pth")
+load_from = os.path.join(WORLDENGINE_DATA_ROOT, "alg_engine/ckpts/track_map_nuplan_r50_navtrain_100pct_bs1x8.pth")
 find_unused_parameters = True

@@ -6,14 +6,14 @@ if [ "$#" -ne 3 ]; then
     exit 2
 fi
 
-T=$(date +%m%d%H%M)
+T=$(date +%Y%m%dT%H%M%S)_$$
 CFG=$1
 CKPT=$2
 GPUS=$3
 GPUS_PER_NODE=$((GPUS < 8 ? GPUS : 8))
 
 MASTER_PORT=${MASTER_PORT:-28596}
-WORK_DIR=${WORLDENGINE_ROOT}/experiments/$(echo "${CFG%.*}" | sed -e "s/.*configs\///g")/
+WORK_DIR=${WORLDENGINE_EVAL_OUTPUT:-${WORLDENGINE_ROOT}/experiments/$(echo "${CFG%.*}" | sed -e "s/.*configs\///g")}/
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "${SCRIPT_DIR}/e2e_navsim_rescore_utils.sh"
 validate_navsim_official_rescore_mode
@@ -36,13 +36,14 @@ echo 'WORK_DIR: ' ${WORK_DIR}
 echo 'GPUS_PER_NODE: ' ${GPUS_PER_NODE}
 echo 'PYTHONPATH: ' ${PYTHONPATH}
 
-torchrun \
+"$PYTHON_BIN" -m torch.distributed.run \
     --nproc_per_node=${GPUS_PER_NODE} \
     --master_port=${MASTER_PORT} \
     "${SCRIPT_DIR}/test.py" \
     "$CFG" \
     "$CKPT" \
     --launcher pytorch \
+    --seed "${WORLDENGINE_EVAL_SEED:-0}" \
     --eval bbox \
     --show-dir "$WORK_DIR" \
     --cfg-options \

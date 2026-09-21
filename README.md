@@ -383,3 +383,8 @@ We acknowledge all the open-source contributors for the following projects to ma
 **Contact:** For research collaboration or questions, visit our [Discussions](https://github.com/OpenDriveLab/WorldEngine/discussions)
 
 </div>
+
+
+## DiffusionDrive selector post-training
+
+See [V2/V3 contribution and reproducibility guide](docs/selector_v2_v3/README.md) for the standard selector-only post-training implementation and full evaluation protocol.

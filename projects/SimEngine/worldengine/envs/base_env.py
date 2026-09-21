@@ -340,7 +340,16 @@ class BaseEnv:
         if self.config.with_metric_manager:
             self.engine.register_manager('metric_manager', MetricManager())
         if self.config.with_dense_reward_manager:
-            self.engine.register_manager('dense_reward_manager', DenseRewardManager())
+            if self.config.get('diffusiondrive_dynamic_candidate_reward', False):
+                # Lazy import keeps every non-DiffusionDrive algorithm on the
+                # exact original import/registration path.
+                from worldengine.manager.diffusiondrive_dynamic_reward_manager import (
+                    DiffusionDriveDynamicRewardManager,
+                )
+                reward_manager = DiffusionDriveDynamicRewardManager()
+            else:
+                reward_manager = DenseRewardManager()
+            self.engine.register_manager('dense_reward_manager', reward_manager)
 
     def seed(self, seed=None):
         if seed is not None:

@@ -11,6 +11,9 @@ python worldengine/utils/dataset_utils/nuplan/digitaltwin_nuplan_converter_navsi
 """
 
 import argparse
+import copy
+import hashlib
+import json
 import numpy as np
 from pyquaternion import Quaternion
 import os
@@ -35,7 +38,12 @@ from worldengine.utils.dataset_utils.nuplan.nuplan_utils import (
 from worldengine.utils.dataset_utils.nuplan.digitaltwin_config import load_config, VideoScene
 
 
-def read_openscene_data_infos(openscene_dataroot, log_name, lidar_pc_tokens):
+def read_openscene_data_infos(
+    openscene_dataroot,
+    log_name,
+    lidar_pc_tokens,
+    required_token=None,
+):
     openscene_data_infos = os.path.join(openscene_dataroot, 'meta_datas', 'trainval', f"{log_name}.pkl")
     if not os.path.exists(openscene_data_infos):
         openscene_data_infos = os.path.join(openscene_dataroot, 'meta_datas', 'test', f"{log_name}.pkl")
@@ -45,8 +53,46 @@ def read_openscene_data_infos(openscene_dataroot, log_name, lidar_pc_tokens):
     )
     openscene_data_infos = pickle.load(open(openscene_data_infos, 'rb'))
     openscene_data_dict = {frame['token']: frame for frame in openscene_data_infos}
-    openscene_data_dict = {token: openscene_data_dict[token] for token in lidar_pc_tokens}
-    return openscene_data_dict
+    if required_token is not None and required_token not in openscene_data_dict:
+        raise KeyError(
+            f'required central token {required_token} is absent from OpenScene '
+            f'log {log_name}'
+        )
+    available_positions = [
+        index
+        for index, token in enumerate(lidar_pc_tokens)
+        if token in openscene_data_dict
+    ]
+    if not available_positions:
+        raise KeyError(f'no requested lidar frames exist in OpenScene log {log_name}')
+
+    selected = {}
+    imputations = []
+    for index, token in enumerate(lidar_pc_tokens):
+        if token in openscene_data_dict:
+            selected[token] = openscene_data_dict[token]
+            continue
+        # Missing OpenScene context frames are rare (the rollout audit observed
+        # at most two in a 24-frame window).  Preserve the requested timeline
+        # and schema by cloning the nearest available sampled context frame;
+        # ties deterministically prefer the earlier frame.  The central rare
+        # token is separately required to be present by the caller.
+        source_index = min(
+            available_positions,
+            key=lambda candidate: (abs(candidate - index), candidate),
+        )
+        source_token = lidar_pc_tokens[source_index]
+        frame = copy.deepcopy(openscene_data_dict[source_token])
+        frame['token'] = token
+        selected[token] = frame
+        imputations.append(
+            {
+                'target_token': token,
+                'source_token': source_token,
+                'sample_offset': source_index - index,
+            }
+        )
+    return selected, imputations
 
 def create_scenario_description(
     args,
@@ -68,6 +114,14 @@ def create_scenario_description(
 
     log_length = len(lidar_pcs)
 
+    central_token = video_name.rsplit('-', 1)[-1]
+    openscene_data_infos, openscene_imputations = read_openscene_data_infos(
+        openscene_dataroot,
+        video_info['log_name'],
+        lidar_pc_tokens,
+        required_token=central_token,
+    )
+
     info_dict = dict(
         id=video_name,
         name=video_name,
@@ -79,7 +133,11 @@ def create_scenario_description(
         base_timestamp=lidar_pcs[0].timestamp,
         metadata=dict(
             nuplan_lidar_pc_tokens=lidar_pc_tokens,
-            openscene_data_infos_dict=read_openscene_data_infos(openscene_dataroot, video_info['log_name'], lidar_pc_tokens),
+            openscene_data_infos_dict=openscene_data_infos,
+            openscene_context_imputations=openscene_imputations,
+            openscene_context_imputation_method=(
+                'nearest_available_sampled_frame_tie_earlier_v1'
+            ),
             digitaltwin_asset_id=digitaltwin_config.road_block_name,
         )
     )
@@ -188,6 +246,27 @@ def create_digitaltwin_info_central(video_scene: VideoScene, args=None):
     digitaltwin_config = video_scene.config
     video_info = list(video_scene_dict.values())[0]
 
+    expected_names = [
+        f"{digitaltwin_config.central_log}-{token}"
+        for token in digitaltwin_config.central_tokens
+    ]
+    if args.resume_chunks and expected_names:
+        reusable = []
+        for scenario_name in expected_names:
+            chunk_file = os.path.join(chunks_dir, f"{scenario_name}.pkl")
+            if not os.path.isfile(chunk_file):
+                break
+            try:
+                with open(chunk_file, "rb") as stream:
+                    payload = pickle.load(stream)
+                if set(payload) != {scenario_name}:
+                    break
+            except (OSError, EOFError, ValueError, pickle.PickleError):
+                break
+            reusable.append(scenario_name)
+        if len(reusable) == len(expected_names):
+            return reusable
+
     log_file = os.path.join(nuplan_db_path, f"{video_info['log_name']}.db")
     assert os.path.exists(log_file), f"Log file {log_file} does not exist."
 
@@ -269,16 +348,187 @@ def parse_args():
     )
 
     parser.add_argument('--num-processes', type=int, default=multiprocessing.cpu_count() - 1)
-    parser.add_argument('--num-splits', type=int, default=8)
+    parser.add_argument(
+        '--num-splits',
+        type=int,
+        default=1,
+        help='Write this many deterministic scenario shard pickles.',
+    )
+    parser.add_argument(
+        '--shards-only',
+        action='store_true',
+        help='Do not also write all_scenarios.pkl (useful for very large sets).',
+    )
+    parser.add_argument(
+        '--expected-scenarios',
+        type=int,
+        help='Fail unless conversion produces exactly this many scenarios.',
+    )
+    parser.add_argument(
+        '--resume-chunks',
+        action='store_true',
+        help='Reuse already complete per-scenario chunks after validating them.',
+    )
+    parser.add_argument(
+        '--worker-count',
+        type=int,
+        default=1,
+        help='Number of independent serial workers partitioning filtered video scenes.',
+    )
+    parser.add_argument(
+        '--worker-index',
+        type=int,
+        default=0,
+        help='Zero-based independent serial worker index.',
+    )
+    parser.add_argument(
+        '--chunks-only',
+        action='store_true',
+        help='Only populate resumable chunks; do not materialize final scenario shards.',
+    )
+    parser.add_argument(
+        '--materialize-only',
+        action='store_true',
+        help='Build final scenario shards from existing chunks without converting scenes.',
+    )
 
     args = parser.parse_args()
     return args
 
 
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def deterministic_scenario_shards(scenario_names, num_splits):
+    """Return stable, balanced, disjoint scenario-name shards."""
+    if num_splits < 1:
+        raise ValueError('--num-splits must be positive')
+    ordered = sorted(set(scenario_names))
+    if len(ordered) != len(scenario_names):
+        raise RuntimeError('conversion produced duplicate scenario names')
+    base_size, remainder = divmod(len(ordered), num_splits)
+    shards = []
+    start = 0
+    for split_index in range(num_splits):
+        size = base_size + (1 if split_index < remainder else 0)
+        shards.append(ordered[start:start + size])
+        start += size
+    if start != len(ordered):
+        raise RuntimeError('scenario shard accounting drifted')
+    return shards
+
+
+def load_scenario_chunks(chunks_dir, scenario_names):
+    scenarios = {}
+    for scenario_name in tqdm(scenario_names, desc='Loading chunks'):
+        chunk_file = os.path.join(chunks_dir, f'{scenario_name}.pkl')
+        if not os.path.exists(chunk_file):
+            raise FileNotFoundError(f'chunk file not found: {chunk_file}')
+        with open(chunk_file, 'rb') as stream:
+            chunk_data = pickle.load(stream)
+        if set(chunk_data) != {scenario_name}:
+            raise RuntimeError(f'invalid scenario chunk: {chunk_file}')
+        scenarios.update(chunk_data)
+    return scenarios
+
+
+def write_scenario_outputs(
+    out_dir,
+    chunks_dir,
+    scenario_names,
+    num_splits,
+    shards_only=False,
+):
+    """Materialize deterministic lane files without requiring one giant pickle."""
+    os.makedirs(out_dir, exist_ok=True)
+    shards = deterministic_scenario_shards(scenario_names, num_splits)
+    outputs = []
+    for split_index, names in enumerate(shards):
+        shard_data = load_scenario_chunks(chunks_dir, names)
+        shard_path = os.path.join(
+            out_dir,
+            f'scenario_shard_{split_index:02d}_of_{num_splits:02d}.pkl',
+        )
+        with open(shard_path, 'wb') as stream:
+            pickle.dump(shard_data, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        outputs.append(
+            {
+                'index': split_index,
+                'path': os.path.abspath(shard_path),
+                'sha256': sha256_file(shard_path),
+                'num_scenarios': len(shard_data),
+                'first_scenario': names[0] if names else None,
+                'last_scenario': names[-1] if names else None,
+            }
+        )
+
+    all_path = None
+    if not shards_only:
+        all_scenarios = load_scenario_chunks(chunks_dir, sorted(scenario_names))
+        all_path = os.path.join(out_dir, 'all_scenarios.pkl')
+        with open(all_path, 'wb') as stream:
+            pickle.dump(all_scenarios, stream, protocol=pickle.HIGHEST_PROTOCOL)
+
+    manifest = {
+        'schema_version': 1,
+        'status': 'PASS',
+        'method': 'deterministic_sorted_contiguous_scenario_shards_v1',
+        'num_scenarios': len(scenario_names),
+        'num_splits': num_splits,
+        'shards_only': bool(shards_only),
+        'all_scenarios_path': os.path.abspath(all_path) if all_path else None,
+        'all_scenarios_sha256': sha256_file(all_path) if all_path else None,
+        'shards': outputs,
+    }
+    manifest_path = os.path.join(out_dir, 'scenario_shards_manifest.json')
+    with open(manifest_path, 'w') as stream:
+        json.dump(manifest, stream, indent=2, sort_keys=True)
+        stream.write('\n')
+    return manifest
+
+
 if __name__ == "__main__":
     args = parse_args()
 
+    if args.num_splits < 1:
+        raise ValueError('--num-splits must be positive')
+    if args.expected_scenarios is not None and args.expected_scenarios < 1:
+        raise ValueError('--expected-scenarios must be positive')
+    if args.worker_count < 1:
+        raise ValueError('--worker-count must be positive')
+    if not 0 <= args.worker_index < args.worker_count:
+        raise ValueError('--worker-index must be in [0, worker-count)')
+    if args.chunks_only and args.materialize_only:
+        raise ValueError('--chunks-only and --materialize-only are mutually exclusive')
+
     out_dir = args.out_dir
+    chunks_dir = os.path.join(out_dir, "chunks")
+    os.makedirs(chunks_dir, exist_ok=True)
+
+    if args.materialize_only:
+        scenario_names = sorted(path.stem for path in Path(chunks_dir).glob('*.pkl'))
+        if (
+            args.expected_scenarios is not None
+            and len(scenario_names) != args.expected_scenarios
+        ):
+            raise RuntimeError(
+                f'found {len(scenario_names)} scenario chunks; '
+                f'expected {args.expected_scenarios}'
+            )
+        manifest = write_scenario_outputs(
+            args.out_dir,
+            chunks_dir,
+            scenario_names,
+            args.num_splits,
+            shards_only=args.shards_only,
+        )
+        print(json.dumps(manifest, sort_keys=True))
+        raise SystemExit(0)
 
     if isinstance(args.navsim_filters, str):
         navsim_filters = [args.navsim_filters]
@@ -293,22 +543,30 @@ if __name__ == "__main__":
     selected_tokens = set(selected_tokens)
 
     configs = Path(args.digitaltwin_asset_root) / "configs"
-    configs = list(configs.glob("*.yaml"))
+    configs = sorted(configs.glob("*.yaml"))
 
     filtered_video_scenes = []
+    total_filtered_video_scenes = 0
     for config_path in configs:
         config = load_config(config_path.as_posix())
         config.central_tokens = [token for token in config.central_tokens if token in selected_tokens]
         if len(config.central_tokens) == 0:
             continue
-        else:
-            video_scene = VideoScene(config)
-            video_scene.load_pickle(f"{args.digitaltwin_asset_root}/assets/{video_scene.name}/video_scene_dict.pkl")
-            filtered_video_scenes.append(video_scene)
+        filtered_index = total_filtered_video_scenes
+        total_filtered_video_scenes += 1
+        if filtered_index % args.worker_count != args.worker_index:
+            continue
+        video_scene = VideoScene(config)
+        video_scene.load_pickle(f"{args.digitaltwin_asset_root}/assets/{video_scene.name}/video_scene_dict.pkl")
+        filtered_video_scenes.append(video_scene)
 
     print("Total tokens in navsim filters:", len(selected_tokens))
     print("Total video scenes:", len(configs))
-    print("Total filtered video scenes:", len(filtered_video_scenes))
+    print("Total filtered video scenes:", total_filtered_video_scenes)
+    print(
+        f"Worker video scenes: {len(filtered_video_scenes)} "
+        f"(worker {args.worker_index}/{args.worker_count})"
+    )
 
     # DEBUG: single process
     # all_scenarios = {}
@@ -316,39 +574,51 @@ if __name__ == "__main__":
     #     scenario_names = create_digitaltwin_info_central(video_scene, args)
     #     print(f"Processed {len(scenario_names)} scenarios")
 
-    # Create chunks directory
-    chunks_dir = os.path.join(out_dir, "chunks")
-    os.makedirs(chunks_dir, exist_ok=True)
-
-    # Process with multiprocessing - workers save directly to disk
+    # Process scenes and save directly to disk.  nuPlan/SQLAlchemy/map objects can
+    # deadlock after fork on some hosts, so num_processes=1 must be a genuinely
+    # serial path rather than a one-worker multiprocessing.Pool.
     all_scenario_names = []
-    with Pool(processes=args.num_processes) as pool:
-        # Use tqdm to show progress
-        for scenario_names in tqdm(
-            pool.imap_unordered(partial(create_digitaltwin_info_central, args=args), filtered_video_scenes),
+    if args.num_processes == 1:
+        for video_scene in tqdm(
+            filtered_video_scenes,
             total=len(filtered_video_scenes),
-            desc="Processing Video Scenes"
+            desc="Processing Video Scenes (serial)",
         ):
+            scenario_names = create_digitaltwin_info_central(video_scene, args=args)
             all_scenario_names.extend(scenario_names)
+    else:
+        with Pool(processes=args.num_processes) as pool:
+            for scenario_names in tqdm(
+                pool.imap_unordered(
+                    partial(create_digitaltwin_info_central, args=args),
+                    filtered_video_scenes,
+                ),
+                total=len(filtered_video_scenes),
+                desc="Processing Video Scenes",
+            ):
+                all_scenario_names.extend(scenario_names)
 
+    all_scenario_names = sorted(all_scenario_names)
     print(f"\nTotal scenarios processed: {len(all_scenario_names)}")
-    print(f"Merging {len(all_scenario_names)} chunk files from {chunks_dir}")
-
-    # Merge all chunk files into final pickle
-    all_scenarios = {}
-    for scenario_name in tqdm(all_scenario_names, desc="Merging chunks"):
-        chunk_file = os.path.join(chunks_dir, f"{scenario_name}.pkl")
-        if os.path.exists(chunk_file):
-            with open(chunk_file, "rb") as f:
-                chunk_data = pickle.load(f)
-                all_scenarios.update(chunk_data)
-        else:
-            print(f"Warning: chunk file not found: {chunk_file}")
-
-    pkl_file_path = f"{args.out_dir}/all_scenarios.pkl"
-    print(f"Saving final result to {pkl_file_path}")
-    os.makedirs(args.out_dir, exist_ok=True)
-    with open(pkl_file_path, "wb") as f:
-        pickle.dump(dict(all_scenarios), f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    print(f"Done! Final pkl contains {len(all_scenarios)} scenarios")
+    if args.chunks_only:
+        print(
+            f"Completed chunk worker {args.worker_index}/{args.worker_count}: "
+            f"{len(all_scenario_names)} scenarios"
+        )
+        raise SystemExit(0)
+    if (
+        args.expected_scenarios is not None
+        and len(all_scenario_names) != args.expected_scenarios
+    ):
+        raise RuntimeError(
+            f'converted {len(all_scenario_names)} scenarios; '
+            f'expected {args.expected_scenarios}'
+        )
+    manifest = write_scenario_outputs(
+        args.out_dir,
+        chunks_dir,
+        all_scenario_names,
+        args.num_splits,
+        shards_only=args.shards_only,
+    )
+    print(json.dumps(manifest, sort_keys=True))
