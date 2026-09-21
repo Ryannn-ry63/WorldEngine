@@ -137,11 +137,13 @@ def main():
         link=out.parent/(out.name+'_inputs')/'checkpoint.pth'
         env['WORLDENGINE_EVAL_OUTPUT']=str(out/'work')
         env['WORLDENGINE_EVAL_SEED']=str(a.eval_seed)
+        env['WORLDENGINE_COLLECT_TMPDIR']=str(link.parent/'distributed_collect')
         script='e2e_dist_eval.sh' if a.split=='navtest' else 'e2e_dist_eval_navtest_failures.sh'
         cmds=[(['bash',str(ALG/'scripts'/script),config,str(link),str(n)],ALG,'openloop.log')]
         if not a.dry_run:
             if out.exists() or link.parent.exists():raise FileExistsError('Choose a new attempt output')
             link.parent.mkdir(parents=True);link.symlink_to(checkpoint)
+            (link.parent/'distributed_collect').mkdir()
         run_commands(cmds,out,env,a.timeout,a.dry_run)
     else:
         for f in (a.scenarios,a.assets):

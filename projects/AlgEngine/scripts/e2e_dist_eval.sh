@@ -30,6 +30,11 @@ export PYTHONPATH="$(realpath "${SCRIPT_DIR}/.."):${PYTHONPATH:-}"
 export OMP_NUM_THREADS=8
 PYTHON_BIN=${PYTHON_BIN:-python}
 
+COLLECT_ARGS=()
+if [[ -n "${WORLDENGINE_COLLECT_TMPDIR:-}" ]]; then
+    COLLECT_ARGS=(--tmpdir "$WORLDENGINE_COLLECT_TMPDIR")
+fi
+
 RUN_MARKER=$(mktemp)
 trap 'rm -f "$RUN_MARKER"' EXIT
 
@@ -44,6 +49,7 @@ echo 'PYTHONPATH: ' ${PYTHONPATH}
     "$CFG" \
     "$CKPT" \
     --launcher pytorch \
+    "${COLLECT_ARGS[@]}" \
     --seed "${WORLDENGINE_EVAL_SEED:-0}" \
     --eval bbox \
     --show-dir "$WORK_DIR" \

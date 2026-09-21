@@ -64,3 +64,5 @@ For new controls, freeze training data/budget/seeds and audit native export befo
 
 Fixed-budget and tuned models are different comparisons. Report all three seeds; never select the best test seed
 as the primary mean. Keep earlier progress-normalization-bug results as history only.
+
+Distributed open-loop collection uses a fresh, explicit CPU result directory per attempt. This avoids the implicit temporary-path broadcast; it does not change trajectories, evaluation seeds or official scoring. Launch validation on the target GPU environment is still required.
