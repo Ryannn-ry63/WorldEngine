@@ -114,6 +114,12 @@ class LearnerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.learner.choose(dict(self.x,reward=torch.ones(1,20)),self.base,'s')
 
+    def test_wrong_input_dtype_is_rejected_before_torch_forward(self):
+        bad = dict(self.x, candidate_trajectories=self.x['candidate_trajectories'].double())
+        with self.assertRaisesRegex(ValueError, 'dtype/device'):
+            self.learner.choose(bad, self.base, 'wrong_dtype')
+        self.assertIsNone(self.learner.pending)
+
     def test_inference_tensors_cloned_before_backward(self):
         with torch.inference_mode(): x=context(); base=torch.zeros(1,20)
         self.learner.choose(x,base,'s')

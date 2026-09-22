@@ -41,6 +41,10 @@ class OnlineV3Learner:
             raise ValueError("Unexpected selector inputs; reward/labels cannot enter forward")
         if tuple(base_logits.shape) != (1, 20):
             raise ValueError("Single-rank pilot requires one complete 20-action group")
+        parameter = next(self.selector.parameters())
+        if any(v.dtype != parameter.dtype or v.device != parameter.device
+               for v in [base_logits, *context.values()]):
+            raise ValueError('Selector inputs must match model dtype/device; normalize at the observation adapter')
         # clone outside inference_mode: inference tensors cannot be saved for backward.
         inputs = {k: v.detach().clone() for k, v in context.items()}
         base = base_logits.detach().clone()

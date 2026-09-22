@@ -106,15 +106,17 @@ class HeadlessSimulator:
                 raise RuntimeError('Non-finite agent state: ' + str(key))
         return result
 
-    def branch_group(self, actions, selected):
+    def branch_group(self, actions, selected, on_main=None):
         if len(actions) != 20 or not 0 <= selected < 20:
             raise ValueError('Strict H1 requires exactly 20 actions and a selected index')
         self.codec.audit_static()
         before = self.snapshot()
-        self.step(actions[selected])  # Publish/execute the chosen action first.
+        main_states = self.step(actions[selected])  # Execute before any branch.
         main = self.snapshot()
         results = []
         try:
+            if on_main is not None:
+                on_main(main, main_states)  # Independent receipt before branch feedback.
             for action in actions:
                 self.restore(before)
                 states = self.step(action)
