@@ -25,6 +25,8 @@ class MemoryJpegLoader(LoadMultiViewImageFromFilesWithDownsample):
 
 class ResidentDataset(NavSimOpenSceneE2EClosedLoop):
     def load_annotations(self, ann_file):
+        if hasattr(ann_file, 'close'):
+            ann_file.close()
         self.index_map = []
         return []
 
@@ -44,7 +46,10 @@ class LiveInputs:
         options = dict(loader); options.pop('type'); options['img_root'] = ''
         self.loader = MemoryJpegLoader(**options)
         cfg['pipeline'][0] = self.loader
-        self.dataset = ResidentDataset(**cfg)
+        try:
+            self.dataset = ResidentDataset(**cfg)
+        finally:
+            self.close()
         if self.dataset.queue_length != 4:
             raise ValueError('Only the original four-frame model is supported')
         self.build_count = 1

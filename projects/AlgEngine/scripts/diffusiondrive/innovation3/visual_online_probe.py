@@ -26,6 +26,7 @@ from .live_inputs import LiveInputs
 from .paths import checked_path, sha256_file
 from .transport import Channel, digest
 from .visual_model import configuration, load_frozen
+from .visual_parity import assert_same, file_oracle, result_parity
 
 
 def source_hashes():
@@ -68,8 +69,11 @@ def main():
     args = parser.parse_args()
     if args.steps < 1 or args.steps > 8:
         raise ValueError('Visual probe steps must be in [1, 8]')
-    output = args.output.expanduser().resolve()
-    if output.exists():
+    output = checked_path(args.output.absolute(), must_exist=False)
+    code_root = Path(__file__).resolve().parents[5]
+    if output == code_root or code_root in output.parents:
+        raise ValueError('Probe output must be outside code')
+    if any(output.with_suffix(suffix).exists() for suffix in ('.json', '.worker.log', '.failure')):
         raise FileExistsError('Choose a fresh visual-probe output: ' + str(output))
     output.parent.mkdir(parents=True, exist_ok=True)
     cfg = json.loads(checked_path(args.settings).read_text())
@@ -83,10 +87,13 @@ def main():
     channel = Channel(left, timeout=1800)
     images = ImageBuffer()
     child = None
+    live = None
     worker_log = output.with_suffix('.worker.log')
     frames, camera_frames = [], []
     started = time.monotonic()
     try:
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
         config = configuration(cfg, args.seed)
         model = load_frozen(config, cfg)
         selector = model.module.planning_head.scene_selector
@@ -125,10 +132,16 @@ def main():
                 if len(frames) > 4:
                     frames, camera_frames = frames[-4:], camera_frames[-4:]
                 data = live.prepare(frames, camera_frames)
+                # Only the acceptance oracle uses temporary frame files.
+                oracle = file_oracle(config.data.test, frames, camera_frames)
+                assert_same(data, oracle)
                 with torch.no_grad():
                     results = model(return_loss=False, rescale=True, **data)
                 if not isinstance(results, list) or len(results) != 1:
                     raise RuntimeError('Unexpected resident model output')
+                with torch.no_grad():
+                    oracle_results = model(return_loss=False, rescale=True, **oracle)
+                forward_errors = result_parity(results[0], oracle_results[0])
                 candidates, selected, details = _sample_context(results[0], identity['token'], selector)
                 request = dict(kind='action', identity=identity, candidates=candidates.tolist(),
                                candidate_hash=digest(candidates.tolist()), selected=selected,
@@ -144,13 +157,19 @@ def main():
                     raise RuntimeError('Real selected branch parity failed')
                 report['events'].append(dict(kind='generated_branch_group', step=index,
                                              candidate_count=20, selected=selected, **details,
+                                             file_input_parity=True, forward_errors=forward_errors,
                                              main_hash=main['next_hash'],
                                              selected_parity=branches['selected_parity']))
             channel.send(dict(kind='close'))
             closed = channel.receive()
             if closed.get('kind') != 'closed' or closed.get('idm_fallbacks') != 0:
                 raise RuntimeError('Visual worker close/fallback check failed')
-            report.update(status='PASS_VISUAL_CANDIDATE_BRIDGE_ONLY', elapsed_seconds=time.monotonic()-started,
+            child.wait(timeout=30)
+            if child.returncode != 0:
+                raise RuntimeError('Visual worker exited unsuccessfully')
+            report.update(real_generator=True, live_render_verified=True,
+                          file_input_forward_parity=True,
+                          status='PASS_VISUAL_CANDIDATE_BRIDGE_ONLY', elapsed_seconds=time.monotonic()-started,
                           generated_steps=args.steps, warmup_frames=3, history_frames=4,
                           candidate_groups=args.steps, candidate_branches=args.steps*20,
                           worker_log=str(worker_log), code_head=report['worker']['runtime']['code_head'])
@@ -160,6 +179,9 @@ def main():
         raise
     finally:
         output.write_text(json.dumps(report, indent=2) + '\n')
+        print(json.dumps(dict(status=report['status'], report=str(output)), indent=2), flush=True)
+        if live is not None:
+            live.close()
         if child is not None:
             code = child.poll()
             if code is None:
