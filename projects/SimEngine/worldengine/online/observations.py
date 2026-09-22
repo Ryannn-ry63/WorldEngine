@@ -4,6 +4,7 @@ Renderer and history are explicit outside the dynamics snapshot, are never
 advanced by branches, and are NOT covered by the v1 restore guarantee.
 """
 import copy
+import json
 from collections import deque
 from pathlib import Path
 import cv2
@@ -83,7 +84,14 @@ class CanonicalObserver:
             if not ok:
                 raise RuntimeError('JPEG encoding failed')
             images[name] = encoded.tobytes()
-        if self.sim.snapshot().state_hash != before.state_hash:
-            raise RuntimeError('Rendering/history changed canonical dynamics state')
+        after = self.sim.snapshot()
+        if after.state_hash != before.state_hash:
+            # Keep the strict gate, but expose the first changed dynamics
+            # component so renderer/data-manager side effects are actionable.
+            mismatch = self.sim.codec.mismatch(
+                'Rendering/history changed canonical dynamics state',
+                before, before, after, None)
+            raise RuntimeError('Rendering/history changed canonical dynamics state: ' +
+                               json.dumps(mismatch.details, sort_keys=True, default=str))
         self.sim.codec.audit_static()
         return frame, images, before.state_hash
