@@ -73,15 +73,21 @@ class RenderManager(BaseManager):
     def step(self):
         pass
 
-    def get_observations(self):
+    def get_observations(self, persist=True, cache=True):
+        """Render current sensors; online callers can disable disk IO and retention.
+
+        Defaults preserve the existing file-based evaluation behavior.
+        """
         step = self.engine.episode_step
         logger.debug(f"Rendering step {step} for scenario {self.current_scene_id}")
         render_results = self.render()
 
-        self.rendering_results[step] = render_results
+        if cache:
+            self.rendering_results[step] = render_results
 
         # trigger data saving after getting the render results
-        self.engine.managers['data_manager'].save_current_frame_data()
+        if persist:
+            self.engine.managers['data_manager'].save_current_frame_data()
 
         return render_results
 
