@@ -28,7 +28,7 @@ class VisualTransportTest(unittest.TestCase):
         finally:
             # reader and owner intentionally share the same fd; close only the
             # mapping in the reader before the owner closes the descriptor.
-            reader.memory.close()
+            reader.close()
             owner.close()
 
     def test_buffer_rejects_reuse_before_ack(self):

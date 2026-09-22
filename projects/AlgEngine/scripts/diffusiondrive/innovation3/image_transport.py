@@ -1,8 +1,8 @@
-"""Bounded inherited memfd image transport; JSON control, no frame files/pickle.
+"""Bounded inherited shared-memory image transport; JSON control, no frame files/pickle.
 
 One writer and one reader, request/reply ownership. The writer may reuse the
 buffer only after the reader has copied/verified the preceding descriptor.
-An inherited anonymous memfd avoids cross-interpreter resource_tracker unlink.
+An inherited anonymous shared-memory fd avoids cross-interpreter resource_tracker unlink.
 """
 import hashlib
 import mmap
@@ -63,11 +63,11 @@ class ImageBuffer:
             except (AttributeError, OSError):
                 # Anonymous TemporaryFile is still inherited by descriptor and
                 # never exposed as a named frame file.
-                self._backing = tempfile.TemporaryFile()
+                self._backing = tempfile.TemporaryFile(dir='/dev/shm')
                 self.fd = self._backing.fileno()
             os.ftruncate(self.fd, CAPACITY)
         else:
-            self.fd = fd
+            self.fd = os.dup(fd)
         if os.fstat(self.fd).st_size != CAPACITY:
             raise ValueError('Unexpected shared camera buffer size')
         self.memory = mmap.mmap(self.fd, CAPACITY)

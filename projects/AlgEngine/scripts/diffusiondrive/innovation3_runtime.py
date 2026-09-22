@@ -37,6 +37,8 @@ def main():
     elif args.stage == 'visual-probe':
         if len(args.devices.split(',')) != 1:
             parser.error('Visual probe is single-GPU; use one H100 first')
+        env.update(OPENBLAS_CORETYPE='Prescott', OMP_NUM_THREADS='1',
+                   OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')
         command += ['--steps', str(args.steps), '--seed', str(args.seed)]
     elif args.stage == 'snapshot-probe':
         # Dynamics workers use CPU only; never disturb an occupied GPU.

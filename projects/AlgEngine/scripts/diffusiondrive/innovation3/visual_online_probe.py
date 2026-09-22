@@ -92,7 +92,7 @@ def main():
         selector = model.module.planning_head.scene_selector
         live = LiveInputs(config.data.test)
         worker_env = dict(os.environ)
-        worker_env.update(CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
+        worker_env.update(OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
                           MKL_NUM_THREADS='1', OPENBLAS_CORETYPE='Prescott', PYTHONDONTWRITEBYTECODE='1')
         command = [cfg['simengine_python'], '-u', '-m', 'innovation3.visual_worker',
                    '--fd', str(right.fileno()), '--images-fd', str(images.fd),
