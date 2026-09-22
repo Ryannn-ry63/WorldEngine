@@ -1,8 +1,9 @@
 """One-update-per-feedback standard V3 learner (single rank, no simulator).
 
-Initialize the trainable V3 from the registered trained V3, not a fresh zero
-head. Its frozen copy is the KL reference. No extra selector architecture is
-introduced. Context must be newly computed from the live observation.
+Keep the registered trained V3 frozen. A separate V3-shaped residual starts
+with zero output and is the only trainable module. Its encoder is initialized
+from V3, while the final projection is zeroed. Context must be freshly computed
+from the live observation. The frozen generator supplies original base logits.
 """
 import copy
 import math
@@ -19,8 +20,11 @@ class OnlineV3Learner:
             raise ValueError("Invalid learning rate")
         if not math.isfinite(kl_weight) or kl_weight < 0:
             raise ValueError("Invalid KL coefficient")
-        self.selector = selector.eval()
         self.reference = copy.deepcopy(selector).eval().requires_grad_(False)
+        self.selector = copy.deepcopy(selector).eval().requires_grad_(True)
+        # Zero only the NEW online correction, never the trained V3 reference.
+        torch.nn.init.zeros_(self.selector.delta_head[-1].weight)
+        torch.nn.init.zeros_(self.selector.delta_head[-1].bias)
         self.optimizer = torch.optim.AdamW(self.selector.parameters(), lr=learning_rate,
                                           weight_decay=1e-4)
         self.kl_weight = kl_weight
@@ -43,10 +47,10 @@ class OnlineV3Learner:
         if not torch.isfinite(base).all() or not all(torch.isfinite(v).all() for v in inputs.values()):
             raise ValueError("Non-finite live inputs")
         with torch.no_grad():
-            behavior_logits = base + self.selector(**inputs)
             reference_logits = base + self.reference(**inputs)
-        logits = base + self.selector(**inputs)
-        if not torch.isfinite(logits).all() or not torch.isfinite(reference_logits).all():
+            behavior_logits = reference_logits + self.selector(**inputs)
+        logits = reference_logits + self.selector(**inputs)
+        if not all(torch.isfinite(v).all() for v in (logits, reference_logits, behavior_logits)):
             raise ValueError("Non-finite selector logits")
         # PyTorch 2.0 eval/no_grad and autograd Transformer kernels can differ
         # numerically. Actions must use the exact frozen-V3 inference path.
@@ -88,13 +92,15 @@ class OnlineV3Learner:
     def state_dict(self):
         if self.pending is not None:
             raise RuntimeError("Cannot checkpoint an unconsumed action")
-        return copy.deepcopy(dict(schema_version=1, selector=self.selector.state_dict(),
+        return copy.deepcopy(dict(schema_version=2, parameterization="frozen_v3_plus_zero_residual",
+                                  selector=self.selector.state_dict(),
                                   reference=self.reference.state_dict(), optimizer=self.optimizer.state_dict(),
                                   rng=self.rng.get_state(), version=self.version, attempts=self.attempts,
                                   kl_weight=self.kl_weight))
 
     def load_state_dict(self, state):
-        if self.pending is not None or state['schema_version'] != 1:
+        if (self.pending is not None or state['schema_version'] != 2
+                or state.get('parameterization') != 'frozen_v3_plus_zero_residual'):
             raise RuntimeError("Invalid checkpoint boundary/schema")
         if state['kl_weight'] != self.kl_weight:
             raise ValueError("Checkpoint KL configuration mismatch")

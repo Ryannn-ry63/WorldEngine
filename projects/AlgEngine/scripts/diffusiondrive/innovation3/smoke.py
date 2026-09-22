@@ -39,6 +39,11 @@ def run(settings, device):
             agents_query=torch.randn(1,30,256,device=device))
         base = torch.randn(1,20,device=device)
     initial = copy.deepcopy(learner.reference.state_dict())
+    initial_residual = copy.deepcopy(learner.selector.state_dict())
+    with torch.no_grad():
+        correction = learner.selector(**context)
+    if not torch.equal(correction, torch.zeros_like(correction)):
+        raise RuntimeError("Online residual is not initially zero")
     reports=[]
     for step in range(8):
         _, probabilities, version = learner.choose(context,base,str(step))
@@ -66,12 +71,15 @@ def run(settings, device):
         raise RuntimeError('Optimizer resume parity failed')
     if not all(torch.equal(v,learner.reference.state_dict()[k]) for k,v in initial.items()):
         raise RuntimeError('Frozen V3 reference changed')
-    changed=sum(not torch.equal(v,learner.selector.state_dict()[k]) for k,v in initial.items())
+    if not all(torch.equal(v,model.state_dict()[k]) for k,v in initial.items()):
+        raise RuntimeError('Input V3 weights changed')
+    changed=sum(not torch.equal(v,learner.selector.state_dict()[k]) for k,v in initial_residual.items())
     if changed == 0: raise RuntimeError('No selector parameter changed')
     if device.type == 'cuda': torch.cuda.synchronize()
     return dict(status='PASS_SYNTHETIC_CONTEXT_LEARNER_ONLY', selector_sha256=digest,
         device=str(device), gpu=torch.cuda.get_device_name(device) if device.type=='cuda' else None,
         updates=reports, changed_tensor_count=changed, step0_v3_parity=True,
+        parameterization="frozen_v3_plus_zero_residual", residual_initially_zero=True, input_v3_unchanged=True,
         serialized_optimizer_rng_resume_parity=True, frozen_reference_unchanged=True,
         real_observation=False, real_generator=False, real_simulation=False,
         real_reward=False, closed_loop_verified=False, formal_ready=False)

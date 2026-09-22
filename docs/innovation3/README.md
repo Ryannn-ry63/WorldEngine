@@ -10,18 +10,26 @@ API; existing evaluation keeps its file-based defaults.
   unavailable old project mounts. Hashes are streamed, not loaded into memory.
 - `innovation3.protocol`: strict full20 step identities, canonical transition,
   branch parity receipt, update ordering, and stale-feedback rejection.
-- `innovation3.learner`: single-rank standard V3 initialization, frozen reference,
+- `innovation3.learner`: frozen standard V3 plus a zero-output online residual,
   existing exact-group loss, one update per feedback, and optimizer/RNG state.
 - `RenderManager.get_observations(persist=False, cache=False)`: in-memory images
   without calling DataManager or retaining all rendered frames. Defaults unchanged.
 - `innovation3.preflight` / `innovation3.smoke`: explicit reports distinguishing
   path/CUDA checks and synthetic learner validation from real closed-loop results.
 
-The learner copies the **trained V3** into the current selector and frozen KL
-reference. It does not reset V3's trained residual head. In PyTorch 2.0, action
-selection uses the no-grad eval path for exact initial inference parity; a separate
-autograd forward records numerical differences (atol 1e-5, rtol 1e-4 guard).
-No-signal groups skip AdamW entirely and record an unchanged policy version.
+The active second-version protocol freezes the **trained V3** and adds a new
+online correction: `current_logits = frozen_V3_logits + online_residual`.
+The correction uses a separate V3-shaped module, copies V3's encoder initialization,
+and zeros only its final output projection. The existing V3 weights are preserved;
+only the new correction belongs to the optimizer. Initial actions exactly reproduce
+V3. In PyTorch 2.0, action selection uses the no-grad eval path; a separate autograd
+forward records numerical differences (atol 1e-5, rtol 1e-4 guard). No-signal groups
+skip AdamW entirely and record an unchanged policy version.
+
+Learner checkpoint schema 2 explicitly records `frozen_v3_plus_zero_residual`.
+Schema-1 checkpoints from the earlier V3-finetuning prototype are rejected. Historical
+smoke reports for that prototype remain historical evidence, not validation of the
+second-version parameterization.
 
 ## Commands
 
@@ -55,7 +63,10 @@ There is intentionally no production training command yet. Remaining work:
 4. Define and test H1 reward windows, progress reference and component semantics.
 5. Connect generator, protocol gate, actual simulator feedback and learner; validate
    one real episode and then DDP, synchronized scene-boundary recovery and throughput.
-6. Add value/TD, longer branches and experimental controls after strict H1 validation.
+   Export and inference must preserve both frozen V3 and the new residual; the old
+   single-V3 materializer cannot represent this parameterization unchanged.
+6. Test longer branches and controls after strict H1 validation. A value/TD head is
+   optional if long-term feedback is insufficient, and must be a separate condition.
 
 Existing SimEngine metrics are not an off-the-shelf future-free H1 reward:
 MetricManager caches expert future, while comfort uses temporal filtering and TTC

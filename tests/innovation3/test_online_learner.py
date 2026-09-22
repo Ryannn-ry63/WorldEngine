@@ -56,6 +56,36 @@ class LearnerTest(unittest.TestCase):
         _,actual,_=learner.choose(self.x,self.base,'s')
         self.assertTrue(torch.equal(expected,actual))
 
+    def test_second_plan_keeps_v3_and_adds_only_new_residual(self):
+        trained=model().eval()
+        with torch.no_grad():
+            trained.delta_head[-1].weight.normal_(0,0.02)
+            trained.delta_head[-1].bias.fill_(0.3)
+        original={k:v.clone() for k,v in trained.state_dict().items()}
+        learner=OnlineV3Learner(trained)
+        with torch.no_grad():
+            correction=learner.selector(**self.x)
+            frozen_logits=self.base+trained(**self.x)
+        self.assertTrue(torch.equal(correction,torch.zeros_like(correction)))
+        learner.choose(self.x,self.base,'s')
+        self.assertTrue(torch.equal(learner.pending[1].detach(),frozen_logits))
+        learner.update(torch.arange(20)[None,:],'s')
+        self.assertTrue(all(torch.equal(v,trained.state_dict()[k]) for k,v in original.items()))
+        self.assertTrue(all(torch.equal(v,learner.reference.state_dict()[k]) for k,v in original.items()))
+        self.assertFalse(any(p.requires_grad for p in learner.reference.parameters()))
+        optimizer_ids={id(p) for group in learner.optimizer.param_groups for p in group['params']}
+        self.assertEqual(optimizer_ids,{id(p) for p in learner.selector.parameters()})
+        # After learning the frozen V3 term must still be present in every logit.
+        with torch.no_grad():
+            expected=(frozen_logits+learner.selector(**self.x)).softmax(-1)
+        _,actual,_=learner.choose(self.x,self.base,'next')
+        self.assertTrue(torch.equal(actual,expected))
+
+    def test_old_finetune_checkpoint_cannot_resume_as_residual(self):
+        saved=self.learner.state_dict()
+        saved['schema_version']=1
+        with self.assertRaises(RuntimeError): self.learner.load_state_dict(saved)
+
     def test_ties_do_not_apply_weight_decay(self):
         before = self.learner.state_dict()
         self.learner.choose(self.x, self.base, 's')
