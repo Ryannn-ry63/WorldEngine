@@ -5,6 +5,7 @@ advanced by branches, and are NOT covered by the v1 restore guarantee.
 """
 import copy
 import json
+import random
 from collections import deque
 from pathlib import Path
 import cv2
@@ -71,19 +72,25 @@ class CanonicalObserver:
     def observe(self):
         import torch
         before = self.sim.snapshot()
-        with torch.no_grad():
-            rendered = self.render.get_observations(persist=False, cache=False)
-        raw = self.data._get_current_frame_data(render_results=rendered, persist_images=False)
-        frame = self.history.append(raw)
-        images = {}
-        for name, camera in raw['cams'].items():
-            image = rendered['cameras'][name]['image']
-            if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
-                raise ValueError('Expected rendered uint8 BGR camera')
-            ok, encoded = cv2.imencode('.jpg', image)  # matches legacy imwrite default
-            if not ok:
-                raise RuntimeError('JPEG encoding failed')
-            images[name] = encoded.tobytes()
+        # Renderer/preprocessing is an observation side effect. Isolate the
+        # process-global Python RNG so it cannot alter future dynamics/spawns.
+        python_rng = random.getstate()
+        try:
+            with torch.no_grad():
+                rendered = self.render.get_observations(persist=False, cache=False)
+            raw = self.data._get_current_frame_data(render_results=rendered, persist_images=False)
+            frame = self.history.append(raw)
+            images = {}
+            for name, camera in raw['cams'].items():
+                image = rendered['cameras'][name]['image']
+                if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
+                    raise ValueError('Expected rendered uint8 BGR camera')
+                ok, encoded = cv2.imencode('.jpg', image)  # matches legacy imwrite default
+                if not ok:
+                    raise RuntimeError('JPEG encoding failed')
+                images[name] = encoded.tobytes()
+        finally:
+            random.setstate(python_rng)
         after = self.sim.snapshot()
         if after.state_hash != before.state_hash:
             # Keep the strict gate, but expose the first changed dynamics
