@@ -1,5 +1,7 @@
 """Resident original four-frame pipeline with in-memory JPEG reads only."""
 import copy
+import pickle
+import tempfile
 import cv2
 import numpy as np
 from mmcv.parallel import collate
@@ -31,7 +33,11 @@ class LiveInputs:
     def __init__(self, dataset_cfg):
         cfg = copy.deepcopy(dict(dataset_cfg))
         cfg.pop('type', None)
-        cfg.update(ann_file='unused-live-metadata', metric_cache_path=None, test_mode=True)
+        cfg.update(metric_cache_path=None, test_mode=True)
+        self._metadata_file = tempfile.NamedTemporaryFile(prefix='innovation3-live-', suffix='.pkl', delete=False)
+        pickle.dump({'infos': []}, self._metadata_file)
+        self._metadata_file.close()
+        cfg['ann_file'] = self._metadata_file.name
         loader = cfg['pipeline'][0]
         if loader['type'] != 'LoadMultiViewImageFromFilesWithDownsample':
             raise ValueError('Unreviewed live image loader')
@@ -42,6 +48,11 @@ class LiveInputs:
         if self.dataset.queue_length != 4:
             raise ValueError('Only the original four-frame model is supported')
         self.build_count = 1
+
+    def close(self):
+        import os
+        try: os.unlink(self._metadata_file.name)
+        except FileNotFoundError: pass
 
     def prepare(self, frames, camera_frames):
         if len(frames) != 4 or len(camera_frames) != 4:
