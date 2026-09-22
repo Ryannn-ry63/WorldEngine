@@ -17,6 +17,7 @@ import numpy as np
 
 from .paths import checked_path, sha256_file
 from worldengine.online.headless import HeadlessSimulator, diagnostic_candidates
+from worldengine.online.numerics import check_numeric_runtime
 from worldengine.online.state import SnapshotCodec, SnapshotParityError, structural_hash
 
 
@@ -206,6 +207,9 @@ def main():
         start = time.monotonic()
         try:
             report['runtime'] = runtime_evidence()
+            report['numeric_health'] = check_numeric_runtime()
+            progress(dict(event='numeric_health', status=report['numeric_health']['status'],
+                          openblas_coretype=os.environ.get('OPENBLAS_CORETYPE')))
             cfg = json.loads(checked_path(args.settings).read_text())
             source = checked_path(Path(cfg['scenario_root']) / 'original/navtrain_failures_per1/all_scenarios.pkl')
             report['source'] = dict(path=str(source), bytes=source.stat().st_size,

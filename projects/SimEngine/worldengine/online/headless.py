@@ -15,6 +15,7 @@ from worldengine.manager.map_manager import ScenarioMapManager
 from worldengine.manager.scenario_manager import ScenarioManager
 from worldengine.common.dataclasses import Trajectory
 from .state import SnapshotCodec
+from .numerics import check_numeric_runtime
 
 
 def dynamics_config(reaction, max_steps):
@@ -41,6 +42,7 @@ def dynamics_config(reaction, max_steps):
 
 class HeadlessSimulator:
     def __init__(self, scene_id, scene, reaction='R', max_steps=8, seed=0):
+        check_numeric_runtime()
         if engine_utils.engine_initialized():
             raise RuntimeError('Use spawn processes: one SimEngine per process')
         if scene['log_length'] <= max_steps:

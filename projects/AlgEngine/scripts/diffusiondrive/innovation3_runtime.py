@@ -32,7 +32,11 @@ def main():
         command += ['--device', 'cuda:0']
     else:
         # Dynamics workers use CPU only; never disturb an occupied GPU.
-        env.update(CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')
+        # Pin before the child imports NumPy. The installed OpenBLAS 0.3.20
+        # Cooperlake path fails SVD/pinv health checks on our target runtime.
+        # Use this same numeric policy for future rendered-main/branch workers.
+        env.update(CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
+                   MKL_NUM_THREADS='1', OPENBLAS_CORETYPE='Prescott')
         command += ['--scene-count', str(args.scene_count), '--steps', str(args.steps), '--seed', str(args.seed)]
     with tempfile.TemporaryDirectory(prefix='innovation3-mpl-') as cache:
         env['MPLCONFIGDIR'] = cache
