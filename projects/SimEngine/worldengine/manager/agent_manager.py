@@ -130,13 +130,20 @@ class BaseAgentManager(BaseManager):
         else:
             agent_config = self.engine.global_config
 
+        # Opt-in deterministic construction is required when a branch creates
+        # a new actor after restoring an earlier state. Default runs retain the
+        # upstream RNG behavior; the manager RNG is included in online snapshots.
+        seed_kwargs = {}
+        if self.engine.global_config.get('online_deterministic_rng', False):
+            seed_kwargs['random_seed'] = int(self.np_random.randint(0, 2**31))
+
         # Spawn agent
         if obj_id == 'ego':
             set_to_add[obj_id] = EgoAgent(
-                obj_id, state, name=obj_id, config=agent_config)
+                obj_id, state, name=obj_id, config=agent_config, **seed_kwargs)
         else:
             set_to_add[obj_id] = BaseAgent(
-                obj_id, state, name=obj_id, config=agent_config, traj_step=self.engine.episode_step)
+                obj_id, state, name=obj_id, config=agent_config, traj_step=self.engine.episode_step, **seed_kwargs)
 
         # Initialize agent
         set_to_add[obj_id].reset()

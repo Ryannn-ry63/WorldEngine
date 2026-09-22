@@ -1,8 +1,9 @@
 # Innovation 3: live selector updates
 
 This branch starts from the clean standard V3 contribution and preserves the
-upstream Git history. All changes are additive except an opt-in memory rendering
-API; existing evaluation keeps its file-based defaults.
+upstream Git history. Memory rendering and deterministic actor RNG are opt-in; existing evaluation
+keeps its file-based behavior and upstream RNG defaults. A map namedtuple also
+exports its declared class name so trusted snapshots can be pickled across spawn.
 
 ## Implemented and bounded validation
 
@@ -14,6 +15,14 @@ API; existing evaluation keeps its file-based defaults.
   existing exact-group loss, one update per feedback, and optimizer/RNG state.
 - `RenderManager.get_observations(persist=False, cache=False)`: in-memory images
   without calling DataManager or retaining all rendered frames. Defaults unchanged.
+- `worldengine.online`: a persistent CPU dynamics adapter using real SimEngine
+  agents, LQR/bicycle ego control, log-play traffic (NR), or IDM traffic (R).
+  It captures controller/navigation/history/spawn/RNG state; the static scene/map
+  bundle stays in memory and dynamic snapshots reference its objects by identity.
+  Static arrays are read-only and full static-state audits reject branch mutation.
+- `innovation3.snapshot_probe`: full20 H1 transition checks, reverse candidate
+  ordering, and replay in a separate persistent **spawn** worker. Candidate inputs
+  are explicit current-state-only diagnostic trajectories, not model predictions.
 - `innovation3.preflight` / `innovation3.smoke`: explicit reports distinguishing
   path/CUDA checks and synthetic learner validation from real closed-loop results.
 
@@ -49,8 +58,39 @@ updates, then validates a serialized optimizer/RNG restoration with a ninth
 update. It does not save a deployable trained model. Use `--devices 0,1,2,3,4,5,6,7`
 for an eight-device **preflight only**; this does not claim DDP was tested.
 
-Tests: `python -m pytest tests/selector_v2_v3 tests/innovation3` in the configured
-AlgEngine environment with this repository's SimEngine on PYTHONPATH.
+For the CPU-only dynamics gate (GPUs can remain occupied):
+
+```bash
+python3 projects/AlgEngine/scripts/diffusiondrive/innovation3_runtime.py \
+  --settings "$SETTINGS" --output "$REPORT" --scene-count 2 --steps 8 snapshot-probe
+```
+
+This deterministically selects the first two sorted scenes from the registered
+`scenario_root/original/navtrain_failures_per1/all_scenarios.pkl`, without filtering
+by rollout success or reward. Both NR/R are tested. Reports and incremental event
+logs are saved outside code; existing report names are refused. Source provenance
+does not establish log-disjointness or image/asset coverage. These diagnostics
+must not be used as online training samples or a performance evaluation.
+
+Existing regression tests, in the configured AlgEngine environment with this
+repository's SimEngine and owned dependencies on PYTHONPATH:
+
+```bash
+python -m pytest tests/selector_v2_v3 tests/innovation3 \
+  --ignore=tests/innovation3/test_headless_snapshot.py
+```
+
+Actual dynamics tests run in the configured **SimEngine** environment, with the
+same explicit source paths used by the runtime launcher:
+
+```bash
+python -m unittest discover -s tests/innovation3 -p test_headless_snapshot.py -v
+```
+
+The dynamics fixtures check actual IDM response to ego interventions, delayed
+actor spawning, NR/R despawn semantics, hidden state and RNG restoration, candidate
+immutability, static-map corruption, and canonical recovery after a branch fails.
+Snapshot payloads are trusted local pickles, not an untrusted network format.
 
 ## Not yet implemented or certified
 
@@ -58,8 +98,11 @@ There is intentionally no production training command yet. Remaining work:
 
 1. Verify log-disjoint scene/image/map/asset coverage; directory existence is not coverage.
 2. Implement live observation preprocessing, temporal state and bounded shared-memory IPC.
-3. Snapshot all dynamic state, controllers, navigation, random generators, traffic spawn
-   state and metric histories; validate selected-branch parity on NR and R.
+3. Extend the verified headless dynamics boundary to the rendered main process
+   and add explicit future-free reward histories/accumulators. Snapshot schema 1
+   deliberately rejects engines with renderer/data/metric/reward managers: it
+   does not certify complete rendered-main or reward parity. Do not remove that
+   guard without implementing and testing the missing state adapters.
 4. Define and test H1 reward windows, progress reference and component semantics.
 5. Connect generator, protocol gate, actual simulator feedback and learner; validate
    one real episode and then DDP, synchronized scene-boundary recovery and throughput.
@@ -81,3 +124,24 @@ comparison as an additional controlled evaluation.
 SimEngine has a process-global engine singleton. Multiple live engines cannot be
 constructed in one process; branch workers require spawn-based process isolation.
 Never fork a process after creating its CUDA rendering context.
+
+## Dynamics gate boundaries and throughput
+
+The canonical execution in `snapshot-probe` is headless. It executes the selected
+action first, evaluates all 20 branches from the pre-action snapshot, verifies
+selected-branch state equality, and restores the canonical post-action state.
+There is no reward, generator forward, optimizer update, or DDP in this probe.
+The branch loop is a serial correctness reference; the extra spawned process
+tests serialization, not parallel throughput. Reported group timings include
+strict dynamic hashes and full static-state audits. They must not be presented
+as training throughput or multiplied by GPU count to estimate scaling.
+
+The upstream bicycle model integrates position from current velocity before
+updating speed and steering. Consequently H1 positions can coincide across
+candidates even when next velocities/steering differ. Reward distinguishability
+requires separate validation; passing snapshot parity does not prove H1 is a
+sufficient learning signal. Preserve the official dynamics for paired controls.
+
+The simulator retains upstream traffic route priors and actor validity schedules.
+This is distinct from allowing an online reward or selector to read logged ego
+future; that information boundary remains to be implemented and audited.

@@ -81,7 +81,10 @@ class BaseAgent(BaseRunnable, WorldEngineObjectType, ABC):
             self.observation = build_observation(object_id)(self)
 
         # policy of the agent.
-        self.policy = build_policy(object_id, self.config)(self)
+        policy_kwargs = {}
+        if self.config.get('online_deterministic_rng', False):
+            policy_kwargs['random_seed'] = int(self.np_random.randint(0, 2**31))
+        self.policy = build_policy(object_id, self.config)(self, **policy_kwargs)
 
         # controller of the agent.
         self.controller = build_controller(object_id, self.config)(self)

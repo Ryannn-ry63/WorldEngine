@@ -7,6 +7,8 @@ from worldengine.components.maps.road_networks.base_road_network import LaneInde
 from worldengine.scenario.scenarios.scenario_description import ScenarioDescription as SD
 
 lane_info = namedtuple("edge_lane", ["lane", "entry_lanes", "exit_lanes", "left_lanes", "right_lanes"])
+# Pickle resolves namedtuple classes by their declared name (spawn snapshots).
+edge_lane = lane_info
 
 
 class EdgeRoadNetwork(BaseRoadNetwork):
