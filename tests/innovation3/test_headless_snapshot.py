@@ -4,14 +4,17 @@ from pathlib import Path
 import pickle
 import random
 import sys
+import json
+import tempfile
 import unittest
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'projects/SimEngine'))
+sys.path.insert(0, str(ROOT / 'projects/AlgEngine/scripts/diffusiondrive'))
 from worldengine.online.headless import HeadlessSimulator, diagnostic_candidates
-from worldengine.online.state import SnapshotCodec, structural_hash
+from worldengine.online.state import SnapshotCodec, SnapshotParityError, structural_hash
 
 
 def scene_fixture():
@@ -132,6 +135,39 @@ class HeadlessSnapshotTest(unittest.TestCase):
                 self.sim.restore(bad)
             self.assertEqual(self.sim.snapshot().state_hash, snap.state_hash)
 
+    def test_parity_failure_keeps_exact_replay_evidence(self):
+        from innovation3.snapshot_probe import save_parity_failure
+        real_step = self.sim.step
+        calls = 0
+
+        def inject_one_ulp_difference(action):
+            nonlocal calls
+            result = real_step(action)
+            calls += 1
+            # First call is canonical; call 14 is candidate 12. A one-ULP
+            # perturbation must still fail the unchanged strict hash gate.
+            if calls == 14:
+                ego = self.sim.engine.agent_manager.ego_agent
+                ego._cur_pos[0] = np.nextafter(ego._cur_pos[0], np.inf)
+            return result
+
+        self.sim.step = inject_one_ulp_difference
+        with self.assertRaises(SnapshotParityError) as context:
+            self.sim.branch_group(diagnostic_candidates(self.sim), 12)
+        error = context.exception
+        self.assertEqual(self.sim.snapshot().state_hash, error.expected.state_hash)
+        self.assertNotEqual(error.expected.state_hash, error.actual.state_hash)
+        self.assertTrue(any(c['path'] == 'agents.ego._cur_pos' for c in error.details['components']))
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = Path(save_parity_failure(error, Path(tmp)/'report.json'))
+            record = json.loads((saved/'diagnosis.json').read_text())
+            self.assertEqual(record['actual_hash'], error.actual.state_hash)
+            replay = pickle.loads((saved/'replay.pkl').read_bytes())
+            self.sim.codec = SnapshotCodec(bundle=(saved/'static_bundle.pkl').read_bytes())
+            self.sim.restore(replay['before'])
+            real_step(replay['action'])
+            self.assertEqual(self.sim.snapshot().state_hash, replay['expected'].state_hash)
+
     def test_different_bundle_transport_preserves_state(self):
         snap = self.sim.snapshot()
         self.sim.codec = SnapshotCodec(bundle=self.sim.codec.bundle)
@@ -151,6 +187,12 @@ class HeadlessSnapshotTest(unittest.TestCase):
 
 
 class HashTest(unittest.TestCase):
+    def test_diagnostic_trace_does_not_change_hash(self):
+        value = dict(a=np.arange(8), b=[1, 2, 3])
+        trace = []
+        self.assertEqual(structural_hash(value), structural_hash(value, trace=trace))
+        self.assertTrue(trace)
+
     def test_cycles_aliases_and_unknown_types(self):
         a = []
         a.append(a)

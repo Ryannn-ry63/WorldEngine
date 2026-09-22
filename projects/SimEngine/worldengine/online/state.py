@@ -19,7 +19,7 @@ from shapely.geometry.base import BaseGeometry
 from worldengine.base_class.base_runnable import BaseRunnable
 
 
-def structural_hash(value, static_refs=None):
+def structural_hash(value, static_refs=None, trace=None):
     """Hash supported state by value, retaining container order and object cycles.
 
     Reject unknown types instead of silently omitting hidden state. Numerical
@@ -30,6 +30,10 @@ def structural_hash(value, static_refs=None):
 
     def emit(tag, data=b''):
         digest.update(tag.encode() + b':' + str(len(data)).encode() + b':' + data)
+        if trace is not None:
+            trace.append(dict(tag=tag, bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                              preview=data[:64].hex() if tag in ('value', 'float', 'geometry')
+                              else data[:160].decode('utf-8', errors='replace')))
 
     def visit(x):
         if static_refs is not None and id(x) in static_refs:
@@ -109,6 +113,18 @@ class EngineSnapshot:
     state_hash: str
     payload_sha256: str
     payload: bytes
+
+
+class SnapshotParityError(RuntimeError):
+    """Keep replay evidence in memory until the private probe saves the failure."""
+    def __init__(self, message, before, expected, actual, bundle, action, details):
+        super().__init__(message)
+        self.before = before
+        self.expected = expected
+        self.actual = actual
+        self.bundle = bundle
+        self.action = action
+        self.details = details
 
 
 MANAGERS = ('scenario_manager', 'map_manager', 'agent_manager')
@@ -245,3 +261,41 @@ class SnapshotCodec:
         BaseRunnable.PARAMETER_SPACE = payload['parameter_space']
         np.random.set_state(payload['numpy_rng'])
         random.setstate(payload['python_rng'])
+
+    def mismatch(self, message, before, expected, actual, action):
+        """Diagnose a mismatch without tolerances or altering the acceptance gate."""
+        left, right = self._load(expected.payload), self._load(actual.payload)
+        traces = [[], []]
+        for payload, trace in zip((left, right), traces):
+            structural_hash((self.static_sha256, payload), self.refs, trace=trace)
+        first = next((i for i, (a, b) in enumerate(zip(*traces)) if a != b),
+                     min(map(len, traces)))
+        components = []
+
+        def check(path, a, b):
+            h1, h2 = structural_hash(a, self.refs), structural_hash(b, self.refs)
+            if h1 != h2:
+                components.append(dict(path=path, expected=h1, actual=h2))
+
+        for key in left:
+            check(key, left[key], right[key])
+        for key in left['engine']:
+            check('engine.' + key, left['engine'][key], right['engine'][key])
+        for name in left['managers']:
+            a, b = vars(left['managers'][name]), vars(right['managers'][name])
+            for key in a.keys() & b.keys():
+                check('managers.' + name + '.' + key, a[key], b[key])
+        a = left['managers']['agent_manager'].all_agents
+        b = right['managers']['agent_manager'].all_agents
+        # all_agents only accesses manager dictionaries, not the engine singleton.
+        for agent_id in sorted(a.keys() & b.keys()):
+            for key in vars(a[agent_id]).keys() & vars(b[agent_id]).keys():
+                check('agents.' + agent_id + '.' + key, getattr(a[agent_id], key), getattr(b[agent_id], key))
+        details = dict(expected_hash=expected.state_hash, actual_hash=actual.state_hash,
+                       expected_payload_sha256=expected.payload_sha256,
+                       actual_payload_sha256=actual.payload_sha256,
+                       before_hash=before.state_hash, first_trace_difference=first,
+                       trace_lengths=list(map(len, traces)), components=components,
+                       expected_trace=traces[0][max(0, first-5):first+6],
+                       actual_trace=traces[1][max(0, first-5):first+6])
+        return SnapshotParityError(message, before, expected, actual, self.bundle, action, details)

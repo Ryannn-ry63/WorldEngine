@@ -118,7 +118,8 @@ class HeadlessSimulator:
                 states = self.step(action)
                 results.append((self.snapshot(), states))
             if results[selected][0].state_hash != main.state_hash:
-                raise RuntimeError('Selected branch differs from canonical execution')
+                raise self.codec.mismatch('Selected branch differs from canonical execution',
+                                          before, main, results[selected][0], actions[selected])
         finally:
             self.restore(main)
             self.codec.audit_static()

@@ -145,3 +145,26 @@ sufficient learning signal. Preserve the official dynamics for paired controls.
 The simulator retains upstream traffic route priors and actor validity schedules.
 This is distinct from allowing an online reward or selector to read logged ego
 future; that information boundary remains to be implemented and audited.
+
+
+## Investigating a parity failure
+
+A target-instance rerun can fail even after a local probe passed. A local PASS
+must not override that failure or be interpreted as evidence that it is fixed.
+Keep the failed report and rerun using a new report name on the failing instance.
+The probe now records CPU, numeric library versions/thread pools, selected runtime
+settings, Git HEAD, and SHA256 of the relevant source files.
+
+On a state parity failure the strict gate still stops immediately. Alongside the
+report, `<report-stem>.failure/` stores the static scene/map bundle, pre-action
+snapshot, canonical and branch snapshots, and selected action. `diagnosis.json`
+records component hashes, the first differing hash events, and artifact checksums.
+These trusted local pickles are private debugging evidence, never training data.
+They are written only on failure. A one-ULP fault-injection test verifies that
+small numerical mismatches are still rejected, the canonical state is restored,
+and saved pre-action/action evidence can reproduce the unmodified execution.
+
+This adds diagnostics; it does not establish the cause of any previously observed
+failure. Do not loosen tolerances, silently normalize the canonical execution, or
+advance training until the failing target-instance behavior is explained and a
+correction is verified there.

@@ -4,8 +4,11 @@ import hashlib
 import json
 import logging
 import multiprocessing as mp
+import os
 from pathlib import Path
 import pickle
+import platform
+import subprocess
 import sys
 import time
 import traceback
@@ -14,7 +17,7 @@ import numpy as np
 
 from .paths import checked_path, sha256_file
 from worldengine.online.headless import HeadlessSimulator, diagnostic_candidates
-from worldengine.online.state import SnapshotCodec, structural_hash
+from worldengine.online.state import SnapshotCodec, SnapshotParityError, structural_hash
 
 
 class IDMFailures(logging.Handler):
@@ -31,6 +34,44 @@ _worker_sim = None
 _worker_failures = None
 
 
+def runtime_evidence():
+    """Only explicit numeric-runtime settings; never dump the ambient environment."""
+    import scipy
+    from threadpoolctl import threadpool_info
+    code = Path(__file__).resolve().parents[5]
+    tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=code).decode().split('\0')
+    sources = {name: sha256_file(code/name) for name in tracked
+               if name and (name.startswith('projects/SimEngine/worldengine/') or
+                            name.startswith('projects/AlgEngine/scripts/diffusiondrive/innovation3'))}
+    cpu = Path('/proc/cpuinfo')
+    model = next((line.split(':', 1)[1].strip() for line in cpu.read_text().splitlines()
+                  if line.startswith('model name')), None) if cpu.exists() else None
+    return dict(python=sys.executable, python_version=sys.version, numpy=np.__version__, scipy=scipy.__version__,
+                platform=platform.platform(), cpu_model=model, threadpools=threadpool_info(),
+                environment={key: os.environ.get(key) for key in
+                             ('PYTHONHASHSEED', 'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+                              'OPENBLAS_CORETYPE', 'MKL_CBWR', 'NPY_DISABLE_CPU_FEATURES')},
+                code_head=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=code, text=True).strip(),
+                source_sha256=sources)
+
+
+def save_parity_failure(error, output):
+    target = output.with_suffix('.failure')
+    target.mkdir(exist_ok=False)
+    artifacts = {'static_bundle.pkl': error.bundle,
+                 'replay.pkl': pickle.dumps(dict(before=error.before, expected=error.expected,
+                                                actual=error.actual, action=error.action), protocol=5)}
+    checksums = {}
+    for name, data in artifacts.items():
+        with (target/name).open('xb') as stream:
+            stream.write(data)
+        checksums[name] = hashlib.sha256(data).hexdigest()
+    details = dict(error.details, artifacts_sha256=checksums,
+                   trusted_local_pickle_only=True)
+    (target/'diagnosis.json').write_text(json.dumps(details, indent=2)+'\n')
+    return str(target)
+
+
 def worker_init(scene_id, scene, reaction, steps, seed, bundle):
     global _worker_sim, _worker_failures
     _worker_failures = IDMFailures()
@@ -44,7 +85,8 @@ def worker_step(snapshot, action):
     count = _worker_failures.count
     states = _worker_sim.step(action)
     _worker_sim.codec.audit_static()
-    return dict(state_hash=_worker_sim.snapshot().state_hash, states=states,
+    result = _worker_sim.snapshot()
+    return dict(state_hash=result.state_hash, snapshot=result, states=states,
                 idm_fallbacks=_worker_failures.count - count)
 
 
@@ -92,18 +134,25 @@ def run_scene(scene_id, scene, reaction, steps, seed, progress):
                     for index in reversed(range(20)):
                         sim.restore(before)
                         sim.step(actions[index])
-                        if sim.snapshot().state_hash != branches[index][0].state_hash:
-                            raise AssertionError('Branch ordering changed state: ' + str(index))
+                        replay = sim.snapshot()
+                        if replay.state_hash != branches[index][0].state_hash:
+                            raise sim.codec.mismatch('Branch ordering changed state: ' + str(index),
+                                                     before, branches[index][0], replay, actions[index])
                 finally:
                     sim.restore(main)
                     sim.codec.audit_static()
                 record['reverse_order_parity'] = True
                 remote = pool.apply_async(worker_step, (before, actions[selected])).get(timeout=180)
                 record['spawn_process_parity'] = remote['state_hash'] == main.state_hash
-                if not record['spawn_process_parity'] or remote['idm_fallbacks']:
-                    raise AssertionError('Spawn-process parity/fallback check failed')
-            if sim.snapshot().state_hash != main.state_hash:
-                raise AssertionError('Canonical next state was not preserved')
+                if not record['spawn_process_parity']:
+                    raise sim.codec.mismatch('Spawn-process parity check failed',
+                                             before, main, remote['snapshot'], actions[selected])
+                if remote['idm_fallbacks']:
+                    raise AssertionError('Spawn-process IDM fallback check failed')
+            retained = sim.snapshot()
+            if retained.state_hash != main.state_hash:
+                raise sim.codec.mismatch('Canonical next state was not preserved',
+                                         before, main, retained, actions[selected])
             if failures.count:
                 raise AssertionError('IDM silently fell back; not valid reactive evidence')
             record['total_seconds'] = time.monotonic() - tick
@@ -156,6 +205,7 @@ def main():
 
         start = time.monotonic()
         try:
+            report['runtime'] = runtime_evidence()
             cfg = json.loads(checked_path(args.settings).read_text())
             source = checked_path(Path(cfg['scenario_root']) / 'original/navtrain_failures_per1/all_scenarios.pkl')
             report['source'] = dict(path=str(source), bytes=source.stat().st_size,
@@ -175,12 +225,19 @@ def main():
                 raise ValueError('Not enough scenarios in registered source')
             for scene_id, scene in scenes.items():
                 for reaction in ('NR', 'R'):
+                    report['active_scene_mode'] = dict(scene_id=scene_id, reaction=reaction)
                     report['checks'].append(run_scene(scene_id, scene, reaction, args.steps, args.seed, progress))
                     output.write_text(json.dumps(report, indent=2) + '\n')
             report['status'] = 'PASS_HEADLESS_SNAPSHOT_ONLY'
         except Exception as error:
             report['status'] = 'FAIL_HEADLESS_SNAPSHOT'
             report['errors'].append(repr(error))
+            if isinstance(error, SnapshotParityError):
+                report['parity_diagnosis'] = error.details
+                try:
+                    report['failure_artifacts'] = save_parity_failure(error, output)
+                except OSError as save_error:
+                    report['errors'].append('Saving parity evidence failed: ' + repr(save_error))
             report['traceback'] = traceback.format_exc()
             traceback.print_exc()
         finally:
