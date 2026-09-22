@@ -168,3 +168,14 @@ This adds diagnostics; it does not establish the cause of any previously observe
 failure. Do not loosen tolerances, silently normalize the canonical execution, or
 advance training until the failing target-instance behavior is explained and a
 correction is verified there.
+
+### Visual probe asset configuration
+
+`asset_root` must directly contain `<asset_id>/background/<asset_id>.ckpt`.
+For a WE_processed layout, use its `navtrain/assets` directory for this training-source
+probe. `visual_scene_id` optionally pins a scene in the registered
+`original/navtrain_failures_per1/all_scenarios.pkl`; absent that setting, the first
+sorted scene is retained. Missing assets fail explicitly, without switching scenes
+or borrowing another asset from the same log. Audit and record the exact scene/asset
+pair before GPU execution. Asset availability alone is not a training-set coverage
+or log-disjointness certification. Existing headless probes keep their original scene selection.

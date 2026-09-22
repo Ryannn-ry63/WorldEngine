@@ -9,6 +9,7 @@ import socket
 import traceback
 import numpy as np
 from .paths import checked_path, sha256_file
+from .visual_assets import visual_asset
 from .transport import Channel, digest
 from .image_transport import ImageBuffer, metadata_to_wire
 from .snapshot_probe import IDMFailures, runtime_evidence, save_parity_failure
@@ -35,14 +36,9 @@ def main():
         source = checked_path(Path(cfg['scenario_root'])/'original/navtrain_failures_per1/all_scenarios.pkl')
         with source.open('rb') as stream:
             scenes = pickle.load(stream)
-        scene_id = sorted(scenes)[0]
+        scene_id, asset_root, asset = visual_asset(cfg, scenes)
         scene = scenes[scene_id]
         del scenes
-        asset_root = checked_path(cfg['asset_root'])
-        asset_id = scene['metadata'].get('digitaltwin_asset_id', scene_id)
-        if asset_id[-4:].startswith('-'):
-            asset_id = asset_id[:-4]
-        asset = checked_path(asset_root/asset_id/'background'/(asset_id+'.ckpt'))
         failure = IDMFailures(); logging.getLogger().addHandler(failure)
         sim = HeadlessSimulator(scene_id, scene, 'R', args.steps+4, args.seed)
         observer = CanonicalObserver(sim, asset_root)
