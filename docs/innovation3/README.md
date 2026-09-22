@@ -179,3 +179,10 @@ sorted scene is retained. Missing assets fail explicitly, without switching scen
 or borrowing another asset from the same log. Audit and record the exact scene/asset
 pair before GPU execution. Asset availability alone is not a training-set coverage
 or log-disjointness certification. Existing headless probes keep their original scene selection.
+
+### Causal H1 reward acceptance
+
+After the visual bridge, use the CPU-only `reward-probe` gate described in
+[h1_reward.md](h1_reward.md). It reuses PDM components with explicitly versioned
+causal windows/reference, independently checks canonical/full20 reward and history
+parity, and reports no-signal groups. It is not a visual learner or formal PDMS.
