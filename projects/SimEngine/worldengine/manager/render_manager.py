@@ -35,7 +35,10 @@ class RenderManager(BaseManager):
                 # pass rear axle position and heading
                 bbox = np.array([agent.rear_vehicle.current_position[0], agent.rear_vehicle.current_position[1], 0.0, 0.0, 0.0, agent.current_heading])
             else:
-                bbox = agent.bounding_box
+                # Rendering converts local coordinates to the renderer frame.
+                # Never translate the agent-owned array in place: it is part of
+                # the canonical dynamics state and is covered by snapshots.
+                bbox = np.array(agent.bounding_box, copy=True)
             # transform to nuplan global coordinate system.
             bbox[:2] += self.local2global_translation_xy
             agents_state[obj_id] = bbox
