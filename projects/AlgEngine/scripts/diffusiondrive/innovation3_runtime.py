@@ -15,15 +15,16 @@ def main():
     parser.add_argument('--scene-count', type=int, default=2, help='snapshot/protocol probes')
     parser.add_argument('--steps', type=int, default=None, help='default 8 for snapshot-probe, 2 for h1-protocol-probe')
     parser.add_argument('--seed', type=int, default=0, help='snapshot/protocol probes')
-    parser.add_argument('stage', choices=['preflight', 'learner-smoke', 'snapshot-probe', 'h1-protocol-probe'])
+    parser.add_argument('stage', choices=['preflight', 'learner-smoke', 'snapshot-probe', 'h1-protocol-probe', 'visual-probe'])
     args = parser.parse_args()
     if args.steps is None:
-        args.steps = 2 if args.stage == 'h1-protocol-probe' else 8
+        args.steps = 2 if args.stage == 'h1-protocol-probe' else (1 if args.stage == 'visual-probe' else 8)
     cfg, env = environment(args.settings, args.devices)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     modules = {'preflight': 'innovation3.preflight', 'learner-smoke': 'innovation3.smoke',
                'snapshot-probe': 'innovation3.snapshot_probe'}
     modules['h1-protocol-probe'] = 'innovation3.h1_protocol_probe'
+    modules['visual-probe'] = 'innovation3.visual_online_probe'
     python = cfg['simengine_python' if args.stage == 'snapshot-probe' else 'algengine_python']
     command = [python, '-m', modules[args.stage],
                '--settings', str(args.settings.absolute()), '--output', str(args.output.absolute())]
@@ -33,6 +34,10 @@ def main():
         if len(args.devices.split(',')) != 1:
             parser.error('Learner smoke is single-rank; it is not a DDP test')
         command += ['--device', 'cuda:0']
+    elif args.stage == 'visual-probe':
+        if len(args.devices.split(',')) != 1:
+            parser.error('Visual probe is single-GPU; use one H100 first')
+        command += ['--steps', str(args.steps), '--seed', str(args.seed)]
     elif args.stage == 'snapshot-probe':
         # Dynamics workers use CPU only; never disturb an occupied GPU.
         # Pin before the child imports NumPy. The installed OpenBLAS 0.3.20

@@ -33,7 +33,7 @@ class DataManager(BaseManager):
         self._video_visualizer = None
         self._data_saver = None
 
-    def _get_current_frame_data(self):
+    def _get_current_frame_data(self, render_results=None, persist_images=True):
         """
         getting current frame data
         Returns:
@@ -78,7 +78,10 @@ class DataManager(BaseManager):
         base_timestamp = current_scene.get("base_timestamp", 0)
         time_stamp = base_timestamp + int(frame_idx * current_scene["sample_rate"] * 0.05 * 1e6)
 
-        render_results = self.engine.managers['render_manager'].rendering_results[frame_idx]
+        if frame_data is None:
+            raise ValueError('No current-frame calibration metadata at step ' + str(frame_idx))
+        if render_results is None:
+            render_results = self.engine.managers['render_manager'].rendering_results[frame_idx]
         ego2global = render_results['ego2global']
         ego2global_translation = ego2global[:3, 3]
         ego2global_rotation = Quaternion(matrix=ego2global[:3, :3]).elements
@@ -147,10 +150,11 @@ class DataManager(BaseManager):
             cam_data['data_path'] = data_path
             # get image from render_results
             img = render_results['cameras'][cam_name]['image']
-            output_path = self.output_dir / 'sensor_blobs' / data_path
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            if not cv2.imwrite(output_path.as_posix(), img):
-                logger.error("problem in saving")
+            if persist_images:
+                output_path = self.output_dir / 'sensor_blobs' / data_path
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                if not cv2.imwrite(output_path.as_posix(), img):
+                    raise IOError('Could not save rendered camera: ' + str(output_path))
 
         # update anns
         frame_data['anns'] = self._get_annotations(
