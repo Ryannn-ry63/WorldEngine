@@ -58,7 +58,7 @@ class RewardSession:
         self.sim.step(action)
         self.history.append(self.capture())
 
-    def group(self, actions, selected):
+    def group(self, actions, selected, on_main=None):
         """Execute canonical first, score it independently, replay and score all20.
 
         Reward snapshots are detached histories and are never changed by a branch.
@@ -77,6 +77,8 @@ class RewardSession:
         def canonical(snapshot, states):
             frame = self.capture()
             main_result.update(frame=frame, reward=adapter.score(history_before, frame))
+            if on_main is not None:
+                on_main(snapshot, states, main_result['reward'])
         before, main, branches = self.sim.branch_group(actions, selected, on_main=canonical)
         rewards, history_hashes = [], []
         try:
@@ -102,6 +104,7 @@ class RewardSession:
             self.sim.codec.audit_static()
         self.history.restore(canonical_history.snapshot())
         return dict(main=main_result['reward'], branches=rewards,
+            branch_hashes=[s.state_hash for s, _ in branches],
             before_hash=before.state_hash, main_hash=main.state_hash,
             selected_state_parity=main.state_hash==branches[selected][0].state_hash,
             selected_reward_parity=True, selected_history_parity=True,
