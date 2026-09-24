@@ -76,7 +76,9 @@ def main():
                    scene_seed=base.get('online_scene_seed', args.seed))
         assignment = dict(scene_id=row['scene_id'])
     output.parent.mkdir(parents=True, exist_ok=True)
-    summary = dict(status='RUNNING', stage='ONLINE_SESSION_REBUILD_REFERENCE', mode=args.mode,
+    stage = ('ONLINE_SESSION_RESIDENT_PARENT' if args.mode == 'resident'
+             else 'ONLINE_SESSION_REBUILD_REFERENCE')
+    summary = dict(status='RUNNING', stage=stage, mode=args.mode,
                    episodes_requested=args.episodes, steps_per_episode=args.steps,
                    decision_opportunities=args.episodes * args.steps, assignment=assignment,
                    episodes=[], actual_optimizer_steps=0, update_attempts=0)
@@ -156,7 +158,8 @@ def main():
                 ledger=receipt,
                 report=str(report_path), checkpoint=str(checkpoint), log=str(episode_log)))
             previous_checkpoint, previous_version = checkpoint, version
-        summary.update(status='PASS_ONLINE_SESSION_REBUILD_REFERENCE',
+        summary.update(status=('PASS_ONLINE_SESSION_RESIDENT_PARENT' if args.mode == 'resident'
+                               else 'PASS_ONLINE_SESSION_REBUILD_REFERENCE'),
                        actual_optimizer_steps=previous_version,
                        update_attempts=args.episodes * args.steps,
                        elapsed_seconds=time.monotonic() - started,
@@ -165,13 +168,14 @@ def main():
                        ledger_boundary=ledger.boundary(),
                        formal_ready=False, used_for_formal_training=False)
     except BaseException as error:
-        summary.update(status='FAIL_ONLINE_SESSION_REBUILD_REFERENCE', error=repr(error),
+        summary.update(status=('FAIL_ONLINE_SESSION_RESIDENT_PARENT' if args.mode == 'resident'
+                               else 'FAIL_ONLINE_SESSION_REBUILD_REFERENCE'), error=repr(error),
                        elapsed_seconds=time.monotonic() - started)
         raise
     finally:
         output.write_text(json.dumps(summary, indent=2) + '\n')
         print(json.dumps(dict(status=summary['status'], report=str(output))), flush=True)
-    return 0 if summary['status'] == 'PASS_ONLINE_SESSION_REBUILD_REFERENCE' else 2
+    return 0 if summary['status'].startswith('PASS_ONLINE_SESSION_') else 2
 
 
 if __name__ == '__main__':

@@ -116,6 +116,12 @@ def main():
             if args.resident:
                 _RESIDENT_MODEL, _RESIDENT_LEARNER = model, learner
         selector = model.module.planning_head.scene_selector
+        # Rebind deterministic diffusion noise for each episode. Rebuild and
+        # resident modes must see the same candidate bank under the same
+        # episode seed even though resident keeps the model object alive.
+        model.module.planning_head.set_candidate_noise_namespace(
+            config.model.planning_head.candidate_noise_namespace)
+        initial_policy_version = learner.version
         initial_model_hash = state_digest(model.state_dict())
         if args.resume:
             resume = checked_path(args.resume)
@@ -297,7 +303,8 @@ def main():
             warmup_frames=13, history_frames=4, next_observation_checks=args.steps-1,
             learner_checkpoint=dict(path=str(checkpoint), sha256=sha256_file(checkpoint), disposable=True),
             idm_fallbacks=closed['idm_fallbacks'], reaction='R',
-            policy_version_initial=(args.policy_version if args.resume else 0))
+            policy_version_initial=initial_policy_version,
+            resident_reuse=resident_reuse)
     except BaseException as error:
         report.update(status='FAIL_STRICT_ONLINE_SELECTOR_ONLY', error=repr(error),
                       traceback=traceback.format_exc())
