@@ -115,6 +115,7 @@ def main():
             learner = OnlineV3Learner(selector, seed=action_seed)
             if args.resident:
                 _RESIDENT_MODEL, _RESIDENT_LEARNER = model, learner
+        selector = model.module.planning_head.scene_selector
         initial_model_hash = state_digest(model.state_dict())
         if args.resume:
             resume = checked_path(args.resume)
