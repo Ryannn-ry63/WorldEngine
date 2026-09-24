@@ -98,7 +98,7 @@ def main():
     try:
         # Import heavy visual dependencies only inside the recorded failure boundary.
         from .live_inputs import LiveInputs
-        from .visual_model import configuration, load_frozen
+        from .visual_model import configuration, load_frozen, reset_temporal_state
         from .visual_parity import assert_same, file_oracle, result_parity
         global _RESIDENT_MODEL, _RESIDENT_LEARNER
         resident_reuse = bool(args.resident and _RESIDENT_MODEL is not None)
@@ -108,6 +108,7 @@ def main():
         config = configuration(cfg, candidate_seed)
         if resident_reuse:
             model, learner = _RESIDENT_MODEL, _RESIDENT_LEARNER
+            reset_temporal_state(model)
         else:
             model = load_frozen(config, cfg)
             selector = model.module.planning_head.scene_selector

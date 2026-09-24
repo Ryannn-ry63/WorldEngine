@@ -45,6 +45,11 @@ class LiveLearningTest(unittest.TestCase):
         self.x = context(); self.base = torch.randn(1,20)
         self.candidates = self.x['candidate_trajectories'][0].tolist()
 
+    def test_new_episode_gate_inherits_current_policy_version(self):
+        self.learner.version = 2
+        online = LiveLearning(self.learner)
+        self.assertEqual(online.wire.gate.policy_version, 2)
+
     def choose(self, ident=None):
         ident = ident or identity()
         self.online.observe(ident); self.worker.observe(ident)

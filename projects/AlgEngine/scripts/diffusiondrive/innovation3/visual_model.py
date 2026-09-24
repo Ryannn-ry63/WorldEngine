@@ -66,3 +66,13 @@ def load_frozen(config, cfg, device_id=None):
     device_id = int(device_id)
     model = MMDataParallel(model.cuda(device_id), device_ids=[device_id])
     return model
+
+
+def reset_temporal_state(model):
+    """Clear per-scene inference state while retaining frozen parameters."""
+    module = getattr(model, 'module', model)
+    module.prev_frame_info = dict(prev_bev=None, scene_token=None, prev_pos=0, prev_angle=0)
+    for name in ('prev_bev', 'scene_token', 'timestamp', 'test_track_instances',
+                 'l2g_r_mat', 'l2g_t'):
+        if hasattr(module, name):
+            setattr(module, name, None)

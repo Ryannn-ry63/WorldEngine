@@ -27,7 +27,9 @@ def state_digest(value):
 class LiveLearning:
     def __init__(self, learner):
         self.learner = learner
-        self.wire = LiveStepGate()
+        # A new episode gets a fresh wire gate, but it must inherit the
+        # learner's current version instead of resetting to version zero.
+        self.wire = LiveStepGate(policy_version=learner.version)
         self.reference_hash = state_digest(learner.reference.state_dict())
         self.last_residual_hash = state_digest(learner.selector.state_dict())
         self.awaiting_ack = None
