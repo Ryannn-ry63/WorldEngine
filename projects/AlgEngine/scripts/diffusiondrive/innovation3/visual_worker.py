@@ -31,6 +31,8 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--reward-adapter', action='store_true')
     parser.add_argument('--online-updates', action='store_true')
+    parser.add_argument('--policy-version', type=int, default=0,
+                        help='policy version carried into this episode reset')
     parser.add_argument('--branch-workers', type=int, default=0,
                         help='persistent CPU SimEngine workers for experimental full20 H1 branches')
     args = parser.parse_args()
@@ -40,7 +42,9 @@ def main():
         parser.error('--branch-workers must be in [0, 20]')
     if args.branch_workers and not args.reward_adapter:
         parser.error('Parallel branches require causal reward')
-    online = LiveStepGate() if args.online_updates else None
+    if args.policy_version < 0:
+        parser.error('--policy-version must be nonnegative')
+    online = LiveStepGate(policy_version=args.policy_version) if args.online_updates else None
     channel = Channel(socket.socket(fileno=args.fd), timeout=900)
     images = ImageBuffer(args.images_fd)
     sim = None

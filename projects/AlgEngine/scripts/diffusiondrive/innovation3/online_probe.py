@@ -44,12 +44,16 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--throughput', action='store_true',
                         help='measure production-like path without file oracle or duplicate forward')
+    parser.add_argument('--resume', type=Path,
+                        help='resume the learner/optimizer/RNG at a completed episode boundary')
+    parser.add_argument('--policy-version', type=int, default=0,
+                        help='learner version expected by the episode worker')
     parser.add_argument('--branch-workers', type=int, default=0,
                         help='experimental persistent CPU SimEngine branch workers (0 keeps serial H1)')
     args = parser.parse_args()
     if not 0 <= args.branch_workers <= 20:
         parser.error('--branch-workers must be in [0, 20]')
-    if not 1 <= args.steps <= 8 or args.seed < 0:
+    if not 1 <= args.steps <= 8 or args.seed < 0 or args.policy_version < 0:
         parser.error('Use steps 1..8 and a nonnegative seed')
     output = checked_path(args.output.absolute(), must_exist=False)
     code = Path(__file__).resolve().parents[5]
@@ -97,6 +101,14 @@ def main():
         selector = model.module.planning_head.scene_selector
         initial_model_hash = state_digest(model.state_dict())
         learner = OnlineV3Learner(selector, seed=action_seed)
+        if args.resume:
+            resume = checked_path(args.resume)
+            payload = torch.load(resume, map_location='cpu')
+            if payload.get('kind') != 'DISPOSABLE_STRICT_ONLINE_PROBE_NOT_FORMAL_TRAINING':
+                raise ValueError('Unexpected online learner checkpoint kind')
+            learner.load_state_dict(payload['learner'])
+            if learner.version != args.policy_version:
+                raise ValueError('Resume checkpoint/version mismatch')
         online = LiveLearning(learner)
         initial_residual_hash = online.last_residual_hash
         live = LiveInputs(config.data.test)
@@ -115,7 +127,7 @@ def main():
             '--fd', str(right.fileno()), '--images-fd', str(images.fd),
             '--settings', str(args.settings.resolve()), '--output', str(output),
             '--steps', str(args.steps), '--seed', str(scene_seed),
-            '--reward-adapter', '--online-updates']
+            '--reward-adapter', '--online-updates', '--policy-version', str(learner.version)]
         if args.branch_workers:
             command += ['--branch-workers', str(args.branch_workers)]
         with worker_log.open('x') as log:
@@ -150,7 +162,7 @@ def main():
                 images.release(identity)
                 observation_copied_ns = time.monotonic_ns()
                 if index < 13:
-                    if identity.get('policy_version') != 0:
+                    if identity.get('policy_version') != learner.version:
                         raise RuntimeError('Warmup changed policy version')
                     channel.send(dict(kind='warmup', identity=identity))
                     report['events'].append(dict(kind='warmup', step=index, history_size=len(window.frames),
@@ -268,7 +280,8 @@ def main():
             generated_steps=args.steps, candidate_groups=args.steps, candidate_branches=args.steps*20,
             warmup_frames=13, history_frames=4, next_observation_checks=args.steps-1,
             learner_checkpoint=dict(path=str(checkpoint), sha256=sha256_file(checkpoint), disposable=True),
-            idm_fallbacks=closed['idm_fallbacks'], reaction='R')
+            idm_fallbacks=closed['idm_fallbacks'], reaction='R',
+            policy_version_initial=(args.policy_version if args.resume else 0))
     except BaseException as error:
         report.update(status='FAIL_STRICT_ONLINE_SELECTOR_ONLY', error=repr(error),
                       traceback=traceback.format_exc())

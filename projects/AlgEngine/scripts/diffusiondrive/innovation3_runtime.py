@@ -18,15 +18,18 @@ def main():
     parser.add_argument('--seed', type=int, default=0, help='snapshot/protocol probes')
     parser.add_argument('--branch-workers', type=int, default=0,
                         help='persistent CPU SimEngine workers per online rank (efficiency pilot)')
-    parser.add_argument('stage', choices=['preflight', 'learner-smoke', 'snapshot-probe', 'h1-protocol-probe', 'visual-probe', 'live-reward-probe', 'online-probe', 'online-throughput-probe', 'ddp-h1-probe', 'ddp-online-throughput-probe', 'reward-probe'])
+    parser.add_argument('--episodes', type=int, default=16,
+                        help='continuous online-session episodes')
+    parser.add_argument('stage', choices=['preflight', 'learner-smoke', 'snapshot-probe', 'h1-protocol-probe', 'visual-probe', 'live-reward-probe', 'online-probe', 'online-throughput-probe', 'online-session-probe', 'ddp-h1-probe', 'ddp-online-throughput-probe', 'reward-probe'])
     args = parser.parse_args()
     if args.steps is None:
         args.steps = 2 if args.stage in ('h1-protocol-probe', 'ddp-h1-probe') else (1 if args.stage in ('visual-probe', 'live-reward-probe') else 8)
     if not 0 <= args.branch_workers <= 20:
         parser.error('--branch-workers must be in [0, 20]')
-    if args.branch_workers and args.stage not in ('online-probe', 'online-throughput-probe', 'ddp-online-throughput-probe'):
+    if args.branch_workers and args.stage not in ('online-probe', 'online-throughput-probe',
+                                                   'online-session-probe', 'ddp-online-throughput-probe'):
         parser.error('--branch-workers is only supported by online throughput stages')
-    if args.scene_manifest and args.stage != 'ddp-online-throughput-probe':
+    if args.scene_manifest and args.stage not in ('ddp-online-throughput-probe', 'online-session-probe'):
         parser.error('--scene-manifest is only supported for real DDP throughput')
     cfg, env = environment(args.settings, args.devices)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
@@ -37,6 +40,7 @@ def main():
     modules['live-reward-probe'] = 'innovation3.visual_online_probe'
     modules['online-probe'] = 'innovation3.online_probe'
     modules['online-throughput-probe'] = 'innovation3.online_probe'
+    modules['online-session-probe'] = 'innovation3.online_session_probe'
     modules['ddp-online-throughput-probe'] = 'innovation3.ddp_online_probe'
     modules['ddp-h1-probe'] = 'innovation3.ddp_h1_probe'
     modules['reward-probe'] = 'innovation3.reward_probe'
@@ -59,6 +63,15 @@ def main():
             command.append('--reward-adapter')
         if args.stage == 'online-throughput-probe':
             command.append('--throughput')
+        if args.branch_workers:
+            command += ['--branch-workers', str(args.branch_workers)]
+    elif args.stage == 'online-session-probe':
+        if len(args.devices.split(',')) != 1:
+            parser.error('Online session probe is single-GPU; use one rank first')
+        env.update(OPENBLAS_CORETYPE='Prescott', OMP_NUM_THREADS='1',
+                   OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')
+        command += ['--steps', str(args.steps), '--seed', str(args.seed),
+                    '--episodes', str(args.episodes), '--throughput']
         if args.branch_workers:
             command += ['--branch-workers', str(args.branch_workers)]
     elif args.stage == 'ddp-h1-probe':
@@ -103,7 +116,8 @@ def main():
         command += ['--scene-count', str(args.scene_count), '--steps', str(args.steps), '--seed', str(args.seed)]
     if args.scene_manifest:
         from innovation3.scene_manifest import load_assignments
-        manifest, _ = load_assignments(args.scene_manifest, args.settings, len(args.devices.split(',')))
+        manifest, _ = load_assignments(args.scene_manifest, args.settings,
+                                       max(2, len(args.devices.split(','))))
         if args.steps != manifest['steps']:
             parser.error('Steps differ from the explicit scene manifest')
         command += ['--scene-manifest', str(args.scene_manifest.absolute())]

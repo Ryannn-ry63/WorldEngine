@@ -56,8 +56,10 @@ def validate_receipts(identity, selected, candidate_hash, main, branches, with_r
 
 class LiveStepGate:
     """Same strict wire gate in both interpreters; only the parent owns learning."""
-    def __init__(self):
-        self.gate = StepGate(reward_atol=0.)
+    def __init__(self, policy_version=0):
+        if type(policy_version) is not int or policy_version < 0:
+            raise ValueError('Nonnegative integer policy version required')
+        self.gate = StepGate(policy_version=policy_version, reward_atol=0.)
         self.raw_identity = None
         self.main = None
         self.history_hash = None
