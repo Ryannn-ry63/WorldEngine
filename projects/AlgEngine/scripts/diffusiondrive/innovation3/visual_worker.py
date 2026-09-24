@@ -47,12 +47,29 @@ def main():
     branch_pool = None
     try:
         cfg = json.loads(checked_path(args.settings).read_text())
-        source = checked_path(Path(cfg['scenario_root'])/'original/navtrain_failures_per1/all_scenarios.pkl')
+        combined_source = checked_path(
+            Path(cfg['scenario_root'])/'original/navtrain_failures_per1/all_scenarios.pkl')
+        # Distinct-scene DDP assignments already carry an audited single-scene
+        # pickle. Loading it avoids reading the ~2.6 GB combined source in every
+        # rank while preserving the exact scene/asset contract. The combined
+        # path remains the compatibility fallback for older probes.
+        source = checked_path(cfg['visual_scene_path']) if cfg.get('visual_scene_path') else combined_source
         with source.open('rb') as stream:
-            scenes = pickle.load(stream)
+            loaded = pickle.load(stream)
+        if cfg.get('visual_scene_path'):
+            scene_id = cfg.get('visual_scene_id')
+            if not scene_id:
+                raise ValueError('visual_scene_path requires visual_scene_id')
+            scene = loaded.get(scene_id) if isinstance(loaded, dict) else loaded
+            if not isinstance(scene, dict):
+                raise ValueError('Single-scene pickle did not contain a scene mapping')
+            scenes = {scene_id: scene}
+        else:
+            scenes = loaded
+            scene_id, _, _ = visual_asset(cfg, scenes)
+            scene = scenes[scene_id]
         scene_id, asset_root, asset = visual_asset(cfg, scenes)
-        scene = scenes[scene_id]
-        del scenes
+        del scenes, loaded
         failure = IDMFailures(); logging.getLogger().addHandler(failure)
         warmup_steps = 13 if args.reward_adapter else 3
         sim = HeadlessSimulator(scene_id, scene, 'R', args.steps+warmup_steps+1, args.seed)
@@ -92,6 +109,11 @@ def main():
                           warmup_contract=('map_live_pose_tangent_v2' if args.reward_adapter else 'diagnostic_v1'),
                           warmup_transitions=warmup_steps,
                           source=dict(path=str(source), bytes=source.stat().st_size, sha256=sha256_file(source)),
+                          combined_scenario_source=dict(
+                              path=str(combined_source),
+                              bytes=combined_source.stat().st_size,
+                              sha256=(sha256_file(combined_source)
+                                      if source == combined_source else None)),
                           asset=dict(path=str(asset), bytes=asset.stat().st_size, sha256=sha256_file(asset))))
         for index in range(args.steps+warmup_steps):
             try:

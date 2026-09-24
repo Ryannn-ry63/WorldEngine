@@ -69,8 +69,14 @@ def validate_scene_reports(reports, rows, manifest):
         worker = report.get('worker', {})
         if worker.get('scene') != row['scene_id']:
             raise RuntimeError('Worker used a different scene than its assignment')
+        source_ok = (
+            worker.get('source', {}).get('path') == row['scene_path'] and
+            worker.get('source', {}).get('sha256') == row['scene_sha256'])
+        # Older reports loaded the combined source. Keep them readable while
+        # requiring the new direct-scene path to prove its own checksum.
+        legacy_source_ok = worker.get('source', {}).get('sha256') == manifest['scenario_source_sha256']
         if (worker.get('asset', {}).get('sha256') != row['asset_sha256'] or
-                worker.get('source', {}).get('sha256') != manifest['scenario_source_sha256']):
+                not (source_ok or legacy_source_ok)):
             raise RuntimeError('Worker source/asset provenance mismatch')
         seeds = report.get('seed_namespaces', {})
         if any(seeds.get(k) != row[k] for k in ('candidate_seed', 'scene_seed')):
