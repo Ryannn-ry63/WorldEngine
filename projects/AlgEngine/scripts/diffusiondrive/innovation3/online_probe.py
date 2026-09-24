@@ -13,7 +13,8 @@ import torch
 
 from .candidate_inputs import from_export
 from .image_transport import ImageBuffer, metadata_from_wire
-from .learner import OnlineV3Learner
+from .learner import (FROZEN_V3_PLUS_ZERO_RESIDUAL, OnlineV3Learner,
+                      PARAMETERIZATIONS)
 from .live_audit import LiveWindow
 from .live_learning import LiveLearning, learning_evidence, state_digest
 from .paths import checked_path, sha256_file
@@ -22,6 +23,9 @@ from .transport import Channel
 
 _RESIDENT_MODEL = None
 _RESIDENT_LEARNER = None
+_RESIDENT_PARAMETERIZATION = None
+_RESIDENT_SOURCE_SHA256 = None
+_RESIDENT_CONFIG = None
 
 
 def source_hashes():
@@ -68,6 +72,21 @@ def main():
     if any(output.with_suffix(s).exists() for s in ('.json', '.worker.log', '.online.pt', '.failure')):
         raise FileExistsError('Use a fresh output basename: ' + str(output))
     cfg = json.loads(checked_path(args.settings).read_text())
+    parameterization = cfg.get('online_parameterization', FROZEN_V3_PLUS_ZERO_RESIDUAL)
+    if parameterization not in PARAMETERIZATIONS:
+        raise ValueError('Unknown online_parameterization: ' + str(parameterization))
+    initialization_source = None
+    if all(key in cfg for key in ('selector_state', 'expected_sha256')):
+        selector_path = checked_path(cfg['selector_state'])
+        expected_selector_sha = cfg['expected_sha256'].get('selector_state')
+        if expected_selector_sha and sha256_file(selector_path) != expected_selector_sha:
+            raise ValueError('Registered V3 selector SHA256 mismatch before learner construction')
+        payload = torch.load(selector_path, map_location='cpu')
+        if payload.get('schema_version') != 3 or payload.get('method') != 'scene_conditioned_exact_group_grpo':
+            raise ValueError('Unexpected offline V3 selector provenance')
+        initialization_source = dict(kind='offline_selector_file', path=str(selector_path),
+            sha256=expected_selector_sha, payload_schema=payload.get('schema_version'),
+            method=payload.get('method'), scene_selector_config=payload.get('scene_selector_config'))
     candidate_seed = cfg.get('online_candidate_seed', args.seed)
     scene_seed = cfg.get('online_scene_seed', args.seed)
     action_seed = cfg.get('online_action_seed', args.seed)
@@ -82,7 +101,7 @@ def main():
         causal_reward_contract='causal_h1_pdm_components_v1',
         official_pdm_reward=False, online_update=False, real_closed_loop=False,
         formal_ready=False, full_resume_verified=False, ddp_verified=False,
-        parameterization='frozen_v3_plus_zero_residual', used_for_formal_training=False,
+        parameterization=parameterization, used_for_formal_training=False,
         selection='categorical_T1_private_learner_rng',
         branch_execution=(('parallel_persistent_full20_workers_%d' % args.branch_workers)
                            if args.branch_workers else
@@ -100,8 +119,16 @@ def main():
         from .live_inputs import LiveInputs
         from .visual_model import configuration, load_frozen, reset_temporal_state
         from .visual_parity import assert_same, file_oracle, result_parity
-        global _RESIDENT_MODEL, _RESIDENT_LEARNER
+        global _RESIDENT_MODEL, _RESIDENT_LEARNER, _RESIDENT_PARAMETERIZATION, _RESIDENT_SOURCE_SHA256, _RESIDENT_CONFIG
+        # Episode-specific inputs may change; model/input contracts may not.
+        resident_config = {k: v for k, v in cfg.items() if k not in (
+            'visual_scene_id', 'visual_scene_path', 'online_candidate_seed',
+            'online_scene_seed', 'online_action_seed')}
         resident_reuse = bool(args.resident and _RESIDENT_MODEL is not None)
+        if resident_reuse and (_RESIDENT_PARAMETERIZATION != parameterization or
+                _RESIDENT_SOURCE_SHA256 != (initialization_source or {}).get('sha256') or
+                _RESIDENT_CONFIG != resident_config):
+            raise RuntimeError('Resident learner provenance/parameterization mismatch; rebuild required')
         if not resident_reuse:
             torch.manual_seed(candidate_seed)
             np.random.seed(candidate_seed)
@@ -112,9 +139,14 @@ def main():
         else:
             model = load_frozen(config, cfg)
             selector = model.module.planning_head.scene_selector
-            learner = OnlineV3Learner(selector, seed=action_seed)
+            learner = OnlineV3Learner(selector, seed=action_seed,
+                                       parameterization=parameterization,
+                                       initialization_source=initialization_source)
             if args.resident:
                 _RESIDENT_MODEL, _RESIDENT_LEARNER = model, learner
+                _RESIDENT_PARAMETERIZATION = parameterization
+                _RESIDENT_SOURCE_SHA256 = (initialization_source or {}).get('sha256')
+                _RESIDENT_CONFIG = resident_config
         selector = model.module.planning_head.scene_selector
         # Rebind deterministic diffusion noise for each episode. Rebuild and
         # resident modes must see the same candidate bank under the same
@@ -127,6 +159,10 @@ def main():
             payload = torch.load(resume, map_location='cpu')
             if payload.get('kind') != 'DISPOSABLE_STRICT_ONLINE_PROBE_NOT_FORMAL_TRAINING':
                 raise ValueError('Unexpected online learner checkpoint kind')
+            if payload.get('parameterization', payload.get('learner', {}).get('parameterization')) != parameterization:
+                raise ValueError('Resume checkpoint parameterization mismatch')
+            if payload['learner'].get('version') != args.policy_version:
+                raise ValueError('Resume checkpoint/version mismatch')
             learner.load_state_dict(payload['learner'])
             if learner.version != args.policy_version:
                 raise ValueError('Resume checkpoint/version mismatch')
@@ -136,7 +172,7 @@ def main():
         initial_attempts = learner.attempts
         initial_learner_hash = state_digest(learner.state_dict())
         online = LiveLearning(learner)
-        initial_residual_hash = online.last_residual_hash
+        initial_selector_hash = online.last_selector_hash
         live = LiveInputs(config.data.test)
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         channel = Channel(left, timeout=1800)
@@ -282,6 +318,7 @@ def main():
             torch.save(dict(kind='DISPOSABLE_STRICT_ONLINE_PROBE_NOT_FORMAL_TRAINING',
                 reward_contract=report['worker']['reward_contract'],
                 source_sha256=report['source_sha256'],
+                parameterization=parameterization, initialization=learner.provenance(),
                 learner=learner.state_dict()), stream)
         verified = evidence['closed_loop_learning_verified']
         if args.throughput:
@@ -307,8 +344,11 @@ def main():
             learner_state_hash_final=state_digest(learner.state_dict()),
             worker_exit=dict(pid=child.pid, returncode=child.returncode, alive=child.poll() is None),
             frozen_generator_and_v3_unchanged=True, frozen_generator_sha256=initial_model_hash,
-            residual_changed=initial_residual_hash != online.last_residual_hash,
-            policy_version=learner.version, step0_v3_parity=True, next_step_waited_for_update=True,
+            frozen_generator_and_original_selector_unchanged=True, frozen_reference_unchanged=True,
+            online_selector_trainable=True, online_selector_changed=initial_selector_hash != online.last_selector_hash,
+            residual_changed=initial_selector_hash != online.last_selector_hash,
+            initialization_provenance=learner.provenance(),
+            policy_version=learner.version, step0_v3_parity=(True if initial_policy_version == 0 else None), next_step_waited_for_update=True,
             generated_steps=args.steps, candidate_groups=args.steps, candidate_branches=args.steps*20,
             warmup_frames=13, history_frames=4, next_observation_checks=args.steps-1,
             learner_checkpoint=dict(path=str(checkpoint), sha256=sha256_file(checkpoint), disposable=True),
@@ -316,6 +356,9 @@ def main():
             policy_version_initial=initial_policy_version,
             resident_reuse=resident_reuse)
     except BaseException as error:
+        if args.resident:
+            _RESIDENT_MODEL = _RESIDENT_LEARNER = _RESIDENT_CONFIG = None
+            _RESIDENT_PARAMETERIZATION = _RESIDENT_SOURCE_SHA256 = None
         report.update(status='FAIL_STRICT_ONLINE_SELECTOR_ONLY', error=repr(error),
                       traceback=traceback.format_exc())
         raise

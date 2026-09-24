@@ -1,11 +1,13 @@
 from pathlib import Path
+import copy
 import sys
 import unittest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'projects/AlgEngine/scripts/diffusiondrive'))
 from grpo_selector_v3_cached_common import SceneConditionedTrajectorySetSelector, exact_group_loss
-from innovation3.learner import OnlineV3Learner
+from innovation3.learner import (OnlineV3Learner,
+    V3_INITIALIZED_SELECTOR_FINETUNE)
 
 
 def model():
@@ -107,10 +109,89 @@ class LearnerTest(unittest.TestCase):
         _,actual,_=learner.choose(self.x,self.base,'next')
         self.assertTrue(torch.equal(actual,expected))
 
+    def test_v3_initialized_finetune_starts_from_complete_v3_without_double_add(self):
+        trained = model().eval()
+        with torch.no_grad():
+            trained.delta_head[-1].weight.normal_(0, 0.02)
+            trained.delta_head[-1].bias.fill_(0.3)
+        original = {k: v.clone() for k, v in trained.state_dict().items()}
+        learner = OnlineV3Learner(
+            trained, parameterization=V3_INITIALIZED_SELECTOR_FINETUNE)
+        self.assertTrue(all(torch.equal(v, learner.selector.state_dict()[k])
+                            for k, v in original.items()))
+        self.assertTrue(all(torch.equal(v, learner.reference.state_dict()[k])
+                            for k, v in original.items()))
+        with torch.no_grad():
+            expected = self.base + trained(**self.x)
+        selected, probabilities, version = learner.choose(self.x, self.base, 's')
+        self.assertEqual(version, 0)
+        self.assertTrue(torch.allclose(learner.pending[1].detach(), expected,
+                                       atol=1e-5, rtol=1e-4))
+        self.assertTrue(torch.equal(probabilities, expected.softmax(-1)))
+        self.assertEqual(int(probabilities.argmax()), int(expected.argmax()))
+        learner.update(torch.arange(20)[None, :], 's')
+        self.assertTrue(any(not torch.equal(v, learner.selector.state_dict()[k])
+                            for k, v in original.items()))
+        self.assertTrue(all(torch.equal(v, trained.state_dict()[k])
+                            for k, v in original.items()))
+        for prefix in ('feature_projection', 'geometry_encoder', 'route_cross_attention',
+                       'context_cross_attention', 'set_encoder', 'delta_head'):
+            self.assertTrue(any(not torch.equal(v, learner.selector.state_dict()[k])
+                                for k, v in original.items() if k.startswith(prefix)), prefix)
+        optimizer_ids = {id(p) for group in learner.optimizer.param_groups for p in group['params']}
+        self.assertEqual(optimizer_ids, {id(p) for p in learner.selector.parameters()})
+        self.assertEqual(learner.state_dict()['schema_version'], 3)
+        self.assertEqual(learner.state_dict()['parameterization'],
+                         V3_INITIALIZED_SELECTOR_FINETUNE)
+
+    def test_parameterization_checkpoint_boundaries_are_not_interchangeable(self):
+        state = OnlineV3Learner(
+            model(), parameterization=V3_INITIALIZED_SELECTOR_FINETUNE).state_dict()
+        with self.assertRaises(RuntimeError):
+            self.learner.load_state_dict(state)
+        state = self.learner.state_dict()
+        with self.assertRaises(RuntimeError):
+            OnlineV3Learner(
+                model(), parameterization=V3_INITIALIZED_SELECTOR_FINETUNE
+            ).load_state_dict(state)
+
     def test_old_finetune_checkpoint_cannot_resume_as_residual(self):
         saved=self.learner.state_dict()
         saved['schema_version']=1
         with self.assertRaises(RuntimeError): self.learner.load_state_dict(saved)
+
+    def test_schema3_rejects_different_offline_selector_fingerprint(self):
+        source = dict(kind='offline_selector_file', sha256='a' * 64)
+        trained = model()
+        with torch.no_grad():
+            trained.delta_head[-1].bias.fill_(0.25)
+        learner = OnlineV3Learner(trained, parameterization=V3_INITIALIZED_SELECTOR_FINETUNE,
+                                  initialization_source=source)
+        state = learner.state_dict()
+        other = model()
+        with torch.no_grad():
+            other.delta_head[-1].bias.fill_(0.75)
+        restored = OnlineV3Learner(other, parameterization=V3_INITIALIZED_SELECTOR_FINETUNE,
+                                   initialization_source=source)
+        with self.assertRaisesRegex(RuntimeError, 'provenance'):
+            restored.load_state_dict(state)
+
+    def test_schema3_rejects_different_source_sha_and_tampered_reference(self):
+        source = dict(kind='offline_selector_file', sha256='b' * 64)
+        template = model()
+        learner = OnlineV3Learner(copy.deepcopy(template), parameterization=V3_INITIALIZED_SELECTOR_FINETUNE,
+                                  initialization_source=source)
+        state = learner.state_dict()
+        mismatched = OnlineV3Learner(copy.deepcopy(template), parameterization=V3_INITIALIZED_SELECTOR_FINETUNE,
+                                     initialization_source=dict(kind='offline_selector_file', sha256='c' * 64))
+        with self.assertRaisesRegex(RuntimeError, 'source'):
+            mismatched.load_state_dict(state)
+        tampered = copy.deepcopy(state)
+        key = next(iter(tampered['reference']))
+        tampered['reference'][key] = tampered['reference'][key].clone()
+        tampered['reference'][key].view(-1)[0] += 1
+        with self.assertRaisesRegex(RuntimeError, 'reference'):
+            learner.load_state_dict(tampered)
 
     def test_ties_do_not_apply_weight_decay(self):
         before = self.learner.state_dict()
@@ -135,6 +216,50 @@ class LearnerTest(unittest.TestCase):
         rewards=torch.arange(20).flip(0)[None,:]
         self.learner.update(rewards,'t'); restored.update(rewards,'t')
         self.assertTrue(all(torch.equal(v,restored.selector.state_dict()[k]) for k,v in self.learner.selector.state_dict().items()))
+
+    def test_schema3_restore_is_atomic_and_config_includes_attention_heads(self):
+        from innovation3.live_learning import state_digest
+        trained = model().eval()
+        with torch.no_grad():
+            trained.delta_head[-1].weight.normal_(0, .02)
+        learner = OnlineV3Learner(trained, parameterization=V3_INITIALIZED_SELECTOR_FINETUNE)
+        learner.choose(self.x, self.base, 'first')
+        learner.update(torch.arange(20)[None, :], 'first')
+        state = learner.state_dict()
+        changed_heads = copy.deepcopy(trained)
+        changed_heads.num_heads = 2  # same state layout, different config
+        bad_arch = OnlineV3Learner(changed_heads, parameterization=V3_INITIALIZED_SELECTOR_FINETUNE)
+        with self.assertRaisesRegex(RuntimeError, 'architecture'):
+            bad_arch.load_state_dict(state)
+        restored = OnlineV3Learner(trained, parameterization=V3_INITIALIZED_SELECTOR_FINETUNE)
+        before = state_digest(restored.state_dict())
+        for mutation in ('rng', 'moment', 'counter', 'nan', 'reference'):
+            bad = copy.deepcopy(state)
+            if mutation == 'rng': bad['rng'] = torch.ones(3, dtype=torch.uint8)
+            if mutation == 'moment':
+                next(iter(bad['optimizer']['state'].values()))['exp_avg'] = torch.ones(1)
+            if mutation == 'counter': bad['attempts'] = -1
+            if mutation == 'nan': next(iter(bad['selector'].values())).view(-1)[0] = float('nan')
+            if mutation == 'reference': next(iter(bad['reference'].values())).view(-1)[0] += 1
+            with self.subTest(mutation=mutation):
+                with self.assertRaises((ValueError, RuntimeError)):
+                    restored.load_state_dict(bad)
+                self.assertEqual(state_digest(restored.state_dict()), before)
+        restored.load_state_dict(state)
+        self.assertEqual(state_digest(restored.state_dict()), state_digest(state))
+        left = learner.choose(self.x, self.base, 'next')
+        right = restored.choose(self.x, self.base, 'next')
+        self.assertEqual(left[0], right[0])
+        self.assertTrue(torch.equal(left[1], right[1]))
+        learner.update(torch.arange(20).flip(0)[None, :], 'next')
+        restored.update(torch.arange(20).flip(0)[None, :], 'next')
+        self.assertEqual(state_digest(learner.state_dict()), state_digest(restored.state_dict()))
+
+    def test_legacy_reference_forward_is_reused(self):
+        from unittest.mock import patch
+        with patch.object(self.learner.reference, 'forward', wraps=self.learner.reference.forward) as call:
+            self.learner.choose(self.x, self.base, 'one')
+            self.assertEqual(call.call_count, 1)
 
     def test_reward_cannot_be_a_forward_input(self):
         with self.assertRaises(ValueError):

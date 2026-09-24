@@ -31,7 +31,9 @@ class LiveLearning:
         # learner's current version instead of resetting to version zero.
         self.wire = LiveStepGate(policy_version=learner.version)
         self.reference_hash = state_digest(learner.reference.state_dict())
-        self.last_residual_hash = state_digest(learner.selector.state_dict())
+        self.last_selector_hash = state_digest(learner.selector.state_dict())
+        # Keep the old field as a compatibility alias for historical reports.
+        self.last_residual_hash = self.last_selector_hash
         self.awaiting_ack = None
 
     def observe(self, identity):
@@ -47,25 +49,27 @@ class LiveLearning:
         if self.wire.gate.phase != 'observed':
             raise RuntimeError('Selection requires the current observation')
         self.before_hash = state_digest(learner.selector.state_dict())
-        if self.before_hash != self.last_residual_hash:
-            raise RuntimeError('Next action did not retain the last updated residual')
+        if self.before_hash != self.last_selector_hash:
+            raise RuntimeError('Next action did not retain the last updated selector')
         self.context = {k: v.detach().clone() for k, v in context.items()}
+        self.base = base.detach().clone()
         self.context_hash = state_digest(self.context)
         with torch.no_grad():
-            self.frozen = base + learner.reference(**self.context)
-            self.before_logits = self.frozen + learner.selector(**self.context)
+            self.frozen = learner.reference_logits(self.base, self.context)
+            self.before_logits = learner.current_logits(self.base, self.context, self.frozen)
         selected, probabilities, version = learner.choose(context, base, self.wire.gate.identity)
         if not torch.equal(probabilities, self.before_logits.softmax(-1)):
             raise RuntimeError('Action probabilities do not match audited current logits')
         if version == 0 and not torch.equal(self.before_logits, self.frozen):
-            raise RuntimeError('Step-zero residual must be exactly zero')
+            raise RuntimeError('Step-zero online selector must equal offline V3')
         request = dict(kind='action', identity=self.wire.raw_identity,
             candidates=candidates, candidate_hash=digest(candidates), selected=selected,
             probabilities=probabilities[0].tolist(), current_logits=self.before_logits[0].tolist(),
             reference_logits=self.frozen[0].tolist())
         self.wire.choose(request)
         self.times['action'] = time.monotonic_ns()
-        self.action_audit = dict(residual_hash_before=self.before_hash,
+        self.action_audit = dict(online_selector_hash_before=self.before_hash,
+            residual_hash_before=self.before_hash,
             context_hash=self.context_hash, version_before=version,
             current_logits=request['current_logits'], reference_logits=request['reference_logits'],
             probabilities=request['probabilities'],
@@ -86,18 +90,19 @@ class LiveLearning:
         after_hash = state_digest(learner.selector.state_dict())
         optimizer_after = state_digest(learner.optimizer.state_dict())
         with torch.no_grad():
-            after_logits = self.frozen + learner.selector(**self.context)
+            after_logits = learner.current_logits(self.base, self.context, self.frozen)
         if not torch.isfinite(after_logits).all():
             raise RuntimeError('Non-finite post-update logits')
         delta = float((after_logits-self.before_logits).abs().max())
         if not update['optimized'] and (after_hash != self.before_hash or
                 optimizer_after != optimizer_before or delta != 0):
-            raise RuntimeError('No-signal step changed residual or optimizer state')
+            raise RuntimeError('No-signal step changed online selector or optimizer state')
         if state_digest(learner.reference.state_dict()) != self.reference_hash or any(
                 p.grad is not None or p.requires_grad for p in learner.reference.parameters()):
             raise RuntimeError('Frozen V3 reference changed or received gradients')
         if state_digest(self.context) != self.context_hash:
             raise RuntimeError('Feedback/update mutated live context')
+        self.last_selector_hash = after_hash
         self.last_residual_hash = after_hash
         self.times['update_complete'] = time.monotonic_ns()
         ack = dict(kind='feedback_ack', identity=self.wire.raw_identity,
@@ -106,7 +111,9 @@ class LiveLearning:
                    policy_version=update['policy_version'], optimized=update['optimized'])
         self.awaiting_ack = self.wire.updated(ack)
         audit = dict(self.action_audit, update=update,
-            residual_hash_after=after_hash, optimizer_hash_before=optimizer_before,
+            online_selector_hash_after=after_hash, residual_hash_after=after_hash,
+            parameterization=learner.parameterization,
+            optimizer_hash_before=optimizer_before,
             optimizer_hash_after=optimizer_after, post_update_logits=after_logits[0].tolist(),
             same_context_logit_change_after_update=delta,
             version_after=learner.version, optimized=update['optimized'],

@@ -1,7 +1,7 @@
 """Real-feedback multi-rank online throughput pilot.
 
 Each rank runs the already accepted resident generator/SimEngine/reward loop
-on one GPU. Only the trainable selector residual gradients are averaged. This
+on one GPU. Only the trainable selector gradients are averaged. This
 is an engineering pilot, never formal training or a scaling claim.
 """
 import argparse
@@ -61,9 +61,15 @@ def coordinate_update(parameters, local_optimized):
 
 def distributed_learner_class(base):
     class DistributedOnlineV3Learner(base):
-        def __init__(self, selector, seed=0):
-            super().__init__(selector, seed=seed, update_coordinator=coordinate_update)
-            initial = state_digest(dict(reference=self.reference.state_dict(), selector=self.selector.state_dict()))
+        def __init__(self, selector, seed=0, parameterization=None, initialization_source=None):
+            kwargs = dict(seed=seed, update_coordinator=coordinate_update,
+                          initialization_source=initialization_source)
+            if parameterization is not None:
+                kwargs['parameterization'] = parameterization
+            super().__init__(selector, **kwargs)
+            initial = state_digest(dict(reference=self.reference.state_dict(),
+                selector=self.selector.state_dict(), parameterization=self.parameterization,
+                initialization=self.provenance(), kl_weight=self.kl_weight))
             gathered = [None] * dist.get_world_size()
             dist.all_gather_object(gathered, initial)
             if len(set(gathered)) != 1:
@@ -173,6 +179,8 @@ def main():
                            for e in x.get('events', []) if e.get('kind') == 'online_update')
                        for x in rank_reports):
                 raise RuntimeError('Missing per-update real DDP state parity')
+            if len({x.get('parameterization') for x in rank_reports}) != 1:
+                raise RuntimeError('DDP report parameterization mismatch')
             if manifest is not None:
                 validate_scene_reports(rank_reports, rows, manifest)
             if not all(x.get('update_attempts') == args.steps and
@@ -200,7 +208,11 @@ def main():
                     update_attempts=x.get('update_attempts'), ddp_state_parity=True)
                     for i, x in enumerate(rank_reports)],
                 real_generator=True, live_render_verified=True, real_generated_reward=True,
+                parameterization=rank_reports[0].get('parameterization'),
+                initialization_provenance=rank_reports[0].get('initialization_provenance'),
                 real_closed_loop=complete, ddp_verified=True, frozen_generator_and_v3_unchanged=True,
+                frozen_generator_and_original_selector_unchanged=True,
+                frozen_reference_unchanged=True, online_selector_trainable=True,
                 ddp_binding_verification=binding_verification,
                 formal_ready=False, used_for_formal_training=False,
                 source_sha256=rank_reports[0].get('source_sha256'),

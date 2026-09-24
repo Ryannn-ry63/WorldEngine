@@ -82,6 +82,9 @@ def main():
     summary = dict(status='RUNNING', stage=stage, mode=args.mode,
                    episodes_requested=args.episodes, steps_per_episode=args.steps,
                    decision_opportunities=args.episodes * args.steps, assignment=assignment,
+                   parameterization=base.get('online_parameterization',
+                                             'frozen_v3_plus_zero_residual'),
+                   online_selector_trainable=True, frozen_generator_and_original_selector_trainable=False,
                    episodes=[], actual_optimizer_steps=0, update_attempts=0)
     ledger = SessionLedger(output.stem, policy_version=0)
     started = time.monotonic()
@@ -140,6 +143,12 @@ def main():
                         ('PASS_STRICT_ONLINE_SELECTOR_ONLY_PROBE', 'INCOMPLETE_ONLINE_LEARNING_EVIDENCE'))
             if report.get('status') not in accepted:
                 raise RuntimeError('Episode %d failed execution contract' % episode)
+            if report.get('parameterization') != summary['parameterization']:
+                raise RuntimeError('Episode %d parameterization mismatch' % episode)
+            if episode == 0:
+                summary['initialization_provenance'] = report.get('initialization_provenance')
+            elif report.get('initialization_provenance') != summary.get('initialization_provenance'):
+                raise RuntimeError('Episode %d initialization provenance mismatch' % episode)
             if (report.get('frozen_generator_and_v3_unchanged') is not True or
                     report.get('candidate_branches') != args.steps * 20 or
                     report.get('idm_fallbacks') != 0 or
@@ -181,6 +190,7 @@ def main():
                 ledger=receipt, resident_reuse=report.get('resident_reuse'),
                 worker_exit=report['worker_exit'],
                 learner_state_hash_initial=report['learner_state_hash_initial'],
+                initialization_provenance=report.get('initialization_provenance'),
                 learner_state_hash_final=report['learner_state_hash_final'],
                 report=str(report_path), checkpoint=str(checkpoint), log=str(episode_log)))
             previous_checkpoint, previous_version = checkpoint, version

@@ -84,6 +84,12 @@ def main():
         "scene_selector_config": selector_payload["scene_selector_config"],
     }
     output.parent.mkdir(parents=True, exist_ok=True)
+    online = selector_payload.get('online_export')
+    if online is not None:
+        if (online.get('disposable') is not True or online.get('formal_ready') is not False
+                or online.get('used_for_formal_training') is not False):
+            raise ValueError('Invalid disposable online export markers')
+        checkpoint['meta']['diffusiondrive_grpo_selector_v3']['online_export'] = online
     torch.save(checkpoint, output)
     report = {
         "schema_version": 3,
@@ -112,6 +118,9 @@ def main():
             )
         },
     }
+    if online is not None:
+        report.update(online_export=online, disposable=True, formal_ready=False,
+                      used_for_formal_training=False)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(json.dumps(report, sort_keys=True))

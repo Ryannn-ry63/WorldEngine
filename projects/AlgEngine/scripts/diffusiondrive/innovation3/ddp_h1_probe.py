@@ -20,7 +20,7 @@ import torch
 import torch.distributed as dist
 
 from grpo_selector_v3_cached_common import SceneConditionedTrajectorySetSelector
-from .learner import OnlineV3Learner
+from .learner import FROZEN_V3_PLUS_ZERO_RESIDUAL, PARAMETERIZATIONS, OnlineV3Learner
 from .paths import checked_path, sha256_file
 
 
@@ -54,8 +54,8 @@ def reduce_gradients(parameters):
     for parameter in parameters:
         present = torch.tensor(1 if parameter.grad is not None else 0,
                                device=parameter.device, dtype=torch.int32)
-        dist.all_reduce(present, op=dist.ReduceOp.MIN)
         present_max = present.clone()
+        dist.all_reduce(present, op=dist.ReduceOp.MIN)
         dist.all_reduce(present_max, op=dist.ReduceOp.MAX)
         if int(present.item()) != int(present_max.item()):
             raise RuntimeError('DDP gradient presence mismatch across ranks')
@@ -99,7 +99,16 @@ def build_learner(cfg, device, seed):
         raise ValueError('Expected standard trained V3 selector schema')
     model = SceneConditionedTrajectorySetSelector(**payload['scene_selector_config']).to(device).float().eval()
     model.load_state_dict(payload['scene_selector_state'], strict=True)
-    return OnlineV3Learner(model, seed=seed, gradient_reducer=reduce_gradients), model
+    parameterization = cfg.get('online_parameterization', FROZEN_V3_PLUS_ZERO_RESIDUAL)
+    if parameterization not in PARAMETERIZATIONS:
+        raise ValueError('Unknown online_parameterization: ' + str(parameterization))
+    source = dict(kind='offline_selector_file', path=str(selector_path),
+                  sha256=cfg['expected_sha256']['selector_state'],
+                  payload_schema=payload['schema_version'], method=payload['method'],
+                  scene_selector_config=payload['scene_selector_config'])
+    return OnlineV3Learner(model, seed=seed, gradient_reducer=reduce_gradients,
+                           parameterization=parameterization,
+                           initialization_source=source), model
 
 
 def run(args):
@@ -173,6 +182,8 @@ def run(args):
                           world_size=world, steps=args.steps, resume_after=args.resume_after,
                           rank_updates=gathered_updates, checkpoint_digest=checkpoint_digest,
                           selector_sha256=sha256_file(cfg['selector_state']),
+                          parameterization=learner.parameterization,
+                          initialization_provenance=learner.provenance(),
                           frozen_v3_unchanged=True, state_parity=True,
                           serialized_scene_boundary_resume=True, optimizer_resume_parity=True,
                           real_generator=False, real_render=False, real_reward=False,

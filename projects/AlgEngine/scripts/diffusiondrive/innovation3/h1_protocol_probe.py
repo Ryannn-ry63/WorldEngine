@@ -22,7 +22,8 @@ import torch
 from grpo_selector_v3_cached_common import SceneConditionedTrajectorySetSelector
 from selector_runtime import environment
 from .diagnostic_signal import CONTRACT
-from .learner import OnlineV3Learner
+from .learner import (FROZEN_V3_PLUS_ZERO_RESIDUAL, PARAMETERIZATIONS,
+                      OnlineV3Learner)
 from .paths import checked_path, sha256_file
 from .protocol import Action, Feedback, StepGate, StepIdentity
 from .transport import Channel, digest
@@ -94,12 +95,19 @@ def run(args, report, progress):
         raise ValueError('Expected standard trained V3 checkpoint')
     model = SceneConditionedTrajectorySetSelector(**payload['scene_selector_config']).float().eval()
     model.load_state_dict(payload['scene_selector_state'], strict=True)
-    learner = OnlineV3Learner(model, seed=args.seed)
+    parameterization = cfg.get('online_parameterization', FROZEN_V3_PLUS_ZERO_RESIDUAL)
+    if parameterization not in PARAMETERIZATIONS:
+        raise ValueError('Unknown online_parameterization: ' + str(parameterization))
+    source = dict(kind='offline_selector_file', path=str(selector), sha256=checkpoint_sha,
+                  payload_schema=payload['schema_version'], method=payload['method'],
+                  scene_selector_config=payload['scene_selector_config'])
+    learner = OnlineV3Learner(model, seed=args.seed, parameterization=parameterization,
+                              initialization_source=source)
     initial_frozen = tensor_digest(model.state_dict())
     initial_residual = tensor_digest(learner.selector.state_dict())
     report.update(selector_sha256=checkpoint_sha, learner_python=sys.executable,
                   learner_pid=os.getpid(), torch_version=torch.__version__,
-                  parameterization='frozen_v3_plus_zero_residual')
+                  parameterization=parameterization, initialization_provenance=learner.provenance())
     left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     channel = Channel(left)
     command = [cfg['simengine_python'], '-u', '-m', 'innovation3.h1_worker',
@@ -140,8 +148,8 @@ def run(args, report, progress):
                         context_hash = tensor_digest(context)
                         base = torch.zeros(1, 20, dtype=torch.float32)
                         with torch.no_grad():
-                            frozen_logits = base + learner.reference(**context)
-                            prior_logits = frozen_logits + learner.selector(**context)
+                            frozen_logits = learner.reference_logits(base, context)
+                            prior_logits = learner.current_logits(base, context, frozen_logits)
                         selected, probabilities, version = learner.choose(context, base, identity)
                         if version == 0 and not torch.equal(probabilities, frozen_logits.softmax(-1)):
                             raise RuntimeError('Step-zero frozen V3 parity failed')
@@ -168,7 +176,8 @@ def run(args, report, progress):
                         restored = None
                         if len(report['checks']) == 1:
                             # pending action cannot be checkpointed; the boundary was saved below.
-                            restored = OnlineV3Learner(model, seed=args.seed)
+                            restored = OnlineV3Learner(model, seed=args.seed,
+                                parameterization=parameterization, initialization_source=source)
                             restored.load_state_dict(resume_boundary)
                             replay = restored.choose(context, base, identity)
                             if replay[0] != selected or not torch.equal(replay[1], probabilities):
@@ -187,7 +196,7 @@ def run(args, report, progress):
                             buffer.seek(0)
                             resume_boundary = torch.load(buffer, map_location='cpu')
                         with torch.no_grad():
-                            next_logits = frozen_logits + learner.selector(**context)
+                            next_logits = learner.current_logits(base, context, frozen_logits)
                         correction_change = float((next_logits-prior_logits).abs().max())
                         if tensor_digest(context) != context_hash or any(p.grad is not None for p in learner.reference.parameters()):
                             raise RuntimeError('Frozen inputs/reference received updates')
@@ -228,7 +237,10 @@ def run(args, report, progress):
     if tensor_digest(model.state_dict()) != initial_frozen:
         raise RuntimeError('Input V3 changed')
     report.update(actual_updates=learner.version, update_attempts=learner.attempts,
-                  frozen_v3_unchanged=True, residual_changed=tensor_digest(learner.selector.state_dict()) != initial_residual,
+                  frozen_v3_unchanged=True, frozen_reference_unchanged=True,
+                  online_selector_trainable=True,
+                  online_selector_changed=tensor_digest(learner.selector.state_dict()) != initial_residual,
+                  residual_changed=tensor_digest(learner.selector.state_dict()) != initial_residual,
                   next_step_waited_for_update=True, main_signal_evaluated_independently=True,
                   causal_protocol_verified=True)
     if learner.version == 0 or not any(x['same_context_logit_change_after_update'] > 0 for x in report['checks']):

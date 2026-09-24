@@ -1,9 +1,11 @@
 # Innovation 3: live selector updates
 
-Current single-GPU learner integration and acceptance criteria are in
-[online_learning.md](online_learning.md). The live candidate and causal reward
-bridges have prior H100 acceptance; the new residual-update path needs its own
-target-GPU run. Historical probe descriptions below retain their original scope.
+The initialized-selector continuation mode is documented in
+[selector_finetune.md](selector_finetune.md). Its CPU tests and registered-weight
+synthetic smoke pass; its H100 acceptance is still pending. Historical H100
+results (including resident parent sessions) used the legacy residual mode.
+[online_learning.md](online_learning.md) describes that historical integration.
+The descriptions below retain their historical scope where explicitly marked.
 
 This branch starts from the clean standard V3 contribution and preserves the
 upstream Git history. Memory rendering and deterministic actor RNG are opt-in; existing evaluation
@@ -16,7 +18,7 @@ exports its declared class name so trusted snapshots can be pickled across spawn
   unavailable old project mounts. Hashes are streamed, not loaded into memory.
 - `innovation3.protocol`: strict full20 step identities, canonical transition,
   branch parity receipt, update ordering, and stale-feedback rejection.
-- `innovation3.learner`: frozen standard V3 plus a zero-output online residual,
+- `innovation3.learner`: explicit legacy residual and initialized-selector modes,
   existing exact-group loss, one update per feedback, and optimizer/RNG state.
 - `RenderManager.get_observations(persist=False, cache=False)`: in-memory images
   without calling DataManager or retaining all rendered frames. Defaults unchanged.
@@ -31,20 +33,27 @@ exports its declared class name so trusted snapshots can be pickled across spawn
 - `innovation3.preflight` / `innovation3.smoke`: explicit reports distinguishing
   path/CUDA checks and synthetic learner validation from real closed-loop results.
 
-The active second-version protocol freezes the **trained V3** and adds a new
+The historical second-version protocol freezes the **trained V3** and adds a new
 online correction: `current_logits = frozen_V3_logits + online_residual`.
-The correction uses a separate V3-shaped module, copies V3's encoder initialization,
-and zeros only its final output projection. The existing V3 weights are preserved;
-only the new correction belongs to the optimizer. Initial logits and probabilities
-exactly reproduce V3; online categorical sampling is distinct from evaluation argmax.
+It remains available for reproducing existing reports. The paper-facing protocol
+uses `online_parameterization=v3_initialized_selector_finetune`: it initializes the
+trainable selector from the complete offline V3 selector and continues training
+that same selector, while retaining a frozen V3 copy only as the KL/reference
+policy. It does not add the offline V3 logits a second time.
+In both protocols the epoch-100 generator, perception stack and original base
+logits remain frozen. Initial logits and probabilities exactly reproduce V3;
+online categorical sampling is distinct from evaluation argmax.
 In PyTorch 2.0, action selection uses the no-grad eval path; a separate autograd
 forward records numerical differences (atol 1e-5, rtol 1e-4 guard). No-signal groups
 skip AdamW entirely and record an unchanged policy version.
 
 Learner checkpoint schema 2 explicitly records `frozen_v3_plus_zero_residual`.
-Schema-1 checkpoints from the earlier V3-finetuning prototype are rejected. Historical
-smoke reports for that prototype remain historical evidence, not validation of the
-second-version parameterization.
+The new continuation protocol uses schema 3 and records
+`v3_initialized_selector_finetune`. Checkpoints from either parameterization are
+rejected by the other. Schema 3 also validates the offline file SHA, initial
+weight fingerprint, full constructor config, frozen reference, optimizer and RNG
+before mutating the live learner. Historical schema-1 checkpoints from the earlier direct
+V3-finetuning prototype remain historical evidence, not resumable artifacts.
 
 ## Commands
 
@@ -63,6 +72,21 @@ with `learner-smoke`. It loads registered V3 weights, performs eight synthetic
 updates, then validates a serialized optimizer/RNG restoration with a ninth
 update. It does not save a deployable trained model. Use `--devices 0,1,2,3,4,5,6,7`
 for an eight-device **preflight only**; this does not claim DDP was tested.
+
+To export a completed disposable initialized-selector probe checkpoint for a
+controlled deployment audit, use fresh paths outside the code tree:
+
+```bash
+PYTHONPATH=projects/AlgEngine/scripts/diffusiondrive python -m innovation3.export_online_selector_v3 \
+  --checkpoint "$ONLINE_CHECKPOINT" \
+  --offline-selector "$SETTINGS_SELECTOR_STATE" \
+  --output "$EXPORTED_SELECTOR" \
+  --manifest "$EXPORT_REPORT"
+```
+
+The exporter accepts schema-3 `v3_initialized_selector_finetune` checkpoints
+only, verifies the offline selector SHA and frozen reference fingerprint, and
+keeps `formal_ready=false`, `used_for_formal_training=false`, and `disposable=true`.
 
 For the CPU-only dynamics gate (GPUs can remain occupied):
 
@@ -100,7 +124,9 @@ Snapshot payloads are trusted local pickles, not an untrusted network format.
 
 ## Not yet implemented or certified
 
-There is intentionally no production training command yet. Remaining work:
+There is intentionally no production training command yet. The following older
+acceptance notes apply to the legacy mode; see selector_finetune.md for the current
+continuation-mode gates. Remaining production work:
 
 1. Verify log-disjoint scene/image/map/asset coverage; directory existence is not coverage.
 2. The bounded H100 learner integration is now accepted with the live
@@ -113,8 +139,9 @@ There is intentionally no production training command yet. Remaining work:
 4. One real learning episode and synthetic DDP/scene-boundary recovery are
    accepted. Run the real production-like throughput pilot, then validate
    real-feedback multi-rank DDP and synchronized recovery.
-   Export and inference must preserve both frozen V3 and the new residual; the old
-   single-V3 materializer cannot represent this parameterization unchanged.
+   Export and inference must record which parameterization was used. The new
+   continuation mode exports one online-finetuned V3 selector; the historical
+   residual mode retains its separate frozen reference and correction state.
 5. Test longer branches and controls after strict H1 validation. A value/TD head is
    optional if long-term feedback is insufficient, and must be a separate condition.
 

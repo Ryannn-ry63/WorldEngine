@@ -16,7 +16,11 @@ def origin_log(name):
 def load_assignments(manifest_path, settings_path, world, verify_files=True):
     manifest_path = checked_path(manifest_path)
     manifest = json.loads(manifest_path.read_text())
-    if (manifest.get('schema') != 1 or manifest.get('purpose') != 'distinct_scene_engineering_pilot'
+    accepted_purposes = {
+        'distinct_scene_engineering_pilot',
+        'distinct_scene_engineering_pilot_v3_initialized_selector',
+    }
+    if (manifest.get('schema') != 1 or manifest.get('purpose') not in accepted_purposes
             or manifest.get('formal_ready') is not False):
         raise ValueError('Expected a non-formal engineering scene manifest')
     if manifest.get('reaction') != 'R' or manifest.get('steps') != 8:
@@ -26,6 +30,13 @@ def load_assignments(manifest_path, settings_path, world, verify_files=True):
     if sha256_file(settings_path) != manifest.get('settings_sha256'):
         raise ValueError('Scene manifest settings SHA256 mismatch')
     cfg = json.loads(checked_path(settings_path).read_text())
+    if manifest.get('purpose') == 'distinct_scene_engineering_pilot_v3_initialized_selector':
+        if cfg.get('online_parameterization') != 'v3_initialized_selector_finetune':
+            raise ValueError('Initialized-selector manifest requires initialized-selector settings')
+        if manifest.get('parameterization') != cfg.get('online_parameterization'):
+            raise ValueError('Scene manifest parameterization mismatch')
+    elif cfg.get('online_parameterization') not in (None, 'frozen_v3_plus_zero_residual'):
+        raise ValueError('Legacy scene manifest cannot use initialized-selector settings')
     rows = manifest.get('scenes', [])
     if not isinstance(rows, list) or not 2 <= world <= len(rows):
         raise ValueError('Not enough explicitly assigned scenes for world size')

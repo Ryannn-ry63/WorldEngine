@@ -18,6 +18,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'projects/AlgEngine/scripts/diffusiondrive'))
 from innovation3 import online_probe, online_session_probe
+from innovation3.learner import V3_INITIALIZED_SELECTOR_FINETUNE
 from innovation3.ddp_h1_probe import digest_state
 from innovation3.ddp_online_probe import validate_bindings
 from innovation3.candidate_inputs import FIELDS
@@ -76,6 +77,9 @@ class WorkerDouble:
 class FrozenDouble:
     def __init__(self):
         self.selector = SceneConditionedTrajectorySetSelector().eval().requires_grad_(False)
+        with torch.no_grad():
+            self.selector.delta_head[-1].weight.normal_(0, 0.02)
+            self.selector.delta_head[-1].bias.fill_(0.3)
         self.module = SimpleNamespace(planning_head=SimpleNamespace(
             scene_selector=self.selector, set_candidate_noise_namespace=Mock()))
         self.parameters = self.selector.parameters
@@ -113,7 +117,7 @@ class DriverTest(unittest.TestCase):
                                'param_groups': [{'params': [3]}]}}
         self.assertEqual(digest_state(state), digest_state(copy.deepcopy(state)))
 
-    def run_driver(self, all_ties=False, stale_ack=False, throughput=False, extra_cfg=None, wrong_scene=False, session_mode=None, second_ties=False):
+    def run_driver(self, all_ties=False, stale_ack=False, throughput=False, extra_cfg=None, wrong_scene=False, session_mode=None, second_ties=False, resident_change=None):
         torch.set_num_threads(1); torch.manual_seed(9)
         worker = WorkerDouble(all_ties, stale_ack)
         frozen = FrozenDouble()
@@ -186,6 +190,20 @@ class DriverTest(unittest.TestCase):
                     with patch.object(sys, 'argv', ['session', '--settings', str(settings),
                             '--output', str(output), '--episodes', '2', '--steps', '8',
                             '--mode', session_mode, '--throughput']):
+                        if resident_change:
+                            original_settings = online_session_probe._episode_settings
+                            def changed_settings(base, row, path, episode):
+                                original_settings(base, row, path, episode)
+                                if episode:
+                                    modified = json.loads(path.read_text())
+                                    modified.update(resident_change)
+                                    path.write_text(json.dumps(modified))
+                            with patch.object(online_session_probe, '_episode_settings', changed_settings):
+                                with self.assertRaisesRegex(RuntimeError, 'Resident learner provenance'):
+                                    online_session_probe.main()
+                            self.assertEqual(visual_module.load_frozen.call_count, 1)
+                            self.assertEqual(visual_module.reset_temporal_state.call_count, 0)
+                            return
                         code = online_session_probe.main()
                     summary = json.loads(output.read_text())
                     self.assertEqual(code, 2 if all_ties else 0)
@@ -269,6 +287,37 @@ class DriverTest(unittest.TestCase):
                     for key in ('selected', 'candidate_hash', 'version_before', 'version_after',
                                 'optimizer_hash_after', 'residual_hash_after'):
                         self.assertEqual(a[key], b[key], key)
+
+    def test_resident_rejects_mode_source_and_config_changes_before_reset(self):
+        for change in ({'online_parameterization': 'frozen_v3_plus_zero_residual'},
+                       {'baseline': '/different/frozen/model'},
+                       {'expected_sha256': {'selector_state': 'a' * 64}}):
+            self.run_driver(session_mode='resident', resident_change=change,
+                extra_cfg=dict(online_parameterization=V3_INITIALIZED_SELECTOR_FINETUNE))
+
+    def test_initialized_two_episode_resident_rebuild_and_skips(self):
+        cfg = dict(online_parameterization=V3_INITIALIZED_SELECTOR_FINETUNE)
+        for all_ties, second_ties in ((False, False), (False, True), (True, False)):
+            a, ar, ast = self.run_driver(session_mode='resident', extra_cfg=cfg,
+                                        all_ties=all_ties, second_ties=second_ties)
+            b, br, bst = self.run_driver(session_mode='rebuild', extra_cfg=cfg,
+                                        all_ties=all_ties, second_ties=second_ties)
+            self.assertEqual(digest_state(ast), digest_state(bst))
+            for left, right in zip(ar, br):
+                for x, y in zip(left['events'], right['events']):
+                    if x['kind'] == 'online_update':
+                        for key in ('selected', 'candidate_hash', 'current_logits',
+                                    'probabilities', 'online_selector_hash_after', 'optimizer_hash_after'):
+                            self.assertEqual(x[key], y[key], key)
+
+    def test_v3_initialized_finetune_parameterization_flows_through_live_probe(self):
+        report = self.run_driver(
+            throughput=True,
+            extra_cfg={'online_parameterization': V3_INITIALIZED_SELECTOR_FINETUNE})
+        self.assertEqual(report['status'], 'PASS_STRICT_ONLINE_THROUGHPUT_PROBE')
+        self.assertEqual(report['parameterization'], V3_INITIALIZED_SELECTOR_FINETUNE)
+        self.assertTrue(report['step0_v3_parity'])
+        self.assertTrue(report['online_selector_changed'])
 
     def test_second_episode_without_signal_preserves_checkpoint_state(self):
         for mode in ('resident', 'rebuild'):
