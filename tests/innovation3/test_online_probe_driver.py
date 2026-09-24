@@ -11,13 +11,13 @@ import sys
 import tempfile
 from types import SimpleNamespace, ModuleType
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'projects/AlgEngine/scripts/diffusiondrive'))
-from innovation3 import online_probe
+from innovation3 import online_probe, online_session_probe
 from innovation3.ddp_h1_probe import digest_state
 from innovation3.ddp_online_probe import validate_bindings
 from innovation3.candidate_inputs import FIELDS
@@ -28,8 +28,8 @@ from test_live_learning import receipts
 
 
 class WorkerDouble:
-    def __init__(self, all_ties=False, stale_ack=False):
-        self.wire = LiveStepGate()
+    def __init__(self, all_ties=False, stale_ack=False, version=0):
+        self.wire = LiveStepGate(policy_version=version)
         self.index = 0
         self.queue = [dict(kind='ready', reward_adapter=True, online_updates=True,
             warmup_transitions=13, reward_contract=dict(name='causal_h1_pdm_components_v1'),
@@ -76,7 +76,8 @@ class WorkerDouble:
 class FrozenDouble:
     def __init__(self):
         self.selector = SceneConditionedTrajectorySetSelector().eval().requires_grad_(False)
-        self.module = SimpleNamespace(planning_head=SimpleNamespace(scene_selector=self.selector))
+        self.module = SimpleNamespace(planning_head=SimpleNamespace(
+            scene_selector=self.selector, set_candidate_noise_namespace=Mock()))
         self.parameters = self.selector.parameters
         self.state_dict = self.selector.state_dict
         self.source = {k: torch.randn(shape).numpy() for k, (_, shape) in FIELDS.items()}
@@ -112,7 +113,7 @@ class DriverTest(unittest.TestCase):
                                'param_groups': [{'params': [3]}]}}
         self.assertEqual(digest_state(state), digest_state(copy.deepcopy(state)))
 
-    def run_driver(self, all_ties=False, stale_ack=False, throughput=False, extra_cfg=None, wrong_scene=False):
+    def run_driver(self, all_ties=False, stale_ack=False, throughput=False, extra_cfg=None, wrong_scene=False, session_mode=None, second_ties=False):
         torch.set_num_threads(1); torch.manual_seed(9)
         worker = WorkerDouble(all_ties, stale_ack)
         frozen = FrozenDouble()
@@ -120,13 +121,16 @@ class DriverTest(unittest.TestCase):
         live_module.LiveInputs = lambda cfg: SimpleNamespace(
             prepare=lambda frames,cameras: dict(token=frames[-1]['token']), close=lambda:None)
         visual_module = ModuleType('innovation3.visual_model')
-        visual_module.configuration = lambda cfg,seed: SimpleNamespace(data=SimpleNamespace(test={}))
-        visual_module.load_frozen = lambda cfg,settings:frozen
+        visual_module.configuration = lambda cfg,seed: SimpleNamespace(
+            data=SimpleNamespace(test={}), model=SimpleNamespace(planning_head=SimpleNamespace(
+                candidate_noise_namespace='innovation3_visual_probe_seed'+str(seed))))
+        visual_module.load_frozen = Mock(return_value=frozen)
+        visual_module.reset_temporal_state = Mock()
         parity = ModuleType('innovation3.visual_parity')
         parity.file_oracle = lambda cfg,frames,cameras: dict(token=frames[-1]['token'])
         parity.assert_same = lambda a,b:self.assertEqual(a,b)
         parity.result_parity = lambda a,b:dict(test_double=0.)
-        child = SimpleNamespace(wait=lambda timeout:0, poll=lambda:0)
+        child = SimpleNamespace(wait=lambda timeout:0, poll=lambda:0, pid=123, returncode=0)
         buffer = SimpleNamespace(fd=0, receive=lambda descriptor,identity:{},
                                  release=lambda identity: None, close=lambda:None)
         sock = SimpleNamespace(fileno=lambda:0, close=lambda:None)
@@ -134,7 +138,8 @@ class DriverTest(unittest.TestCase):
             settings = Path(directory)/'settings.json'
             # Runtime metadata is a test artifact, not a source/config edit.
             with settings.open('x') as stream:
-                json.dump(dict(simengine_python=sys.executable, **(extra_cfg or {})), stream)
+                json.dump(dict(dict(simengine_python=sys.executable, algengine_python=sys.executable,
+                    visual_scene_id='fixture', visual_scene_path='/cpu_fixture.pkl'), **(extra_cfg or {})), stream)
             output = Path(directory)/'report.json'
             argv = ['online-probe', '--settings', str(settings), '--output', str(output), '--steps','8']
             if throughput:
@@ -145,7 +150,9 @@ class DriverTest(unittest.TestCase):
                     'innovation3.visual_parity':parity}))
                 stack.enter_context(patch.object(sys, 'argv', argv))
                 stack.enter_context(patch.object(online_probe.socket, 'socketpair', return_value=(sock,sock)))
-                stack.enter_context(patch.object(online_probe, 'Channel', return_value=worker))
+                channel_mock = stack.enter_context(patch.object(online_probe, 'Channel', return_value=worker))
+                stack.enter_context(patch.object(online_probe, '_RESIDENT_MODEL', None))
+                stack.enter_context(patch.object(online_probe, '_RESIDENT_LEARNER', None))
                 stack.enter_context(patch.object(online_probe, 'ImageBuffer', return_value=buffer))
                 popen = stack.enter_context(patch.object(online_probe.subprocess, 'Popen', return_value=child))
                 stack.enter_context(patch.object(online_probe.subprocess, 'check_output', return_value='test-head'))
@@ -161,6 +168,40 @@ class DriverTest(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError,'acknowledgement mismatch'):
                         online_probe.main()
                     return json.loads(output.read_text())
+                if session_mode:
+                    # Run the actual session driver and actual online CLI/learner.
+                    # Only renderer/model execution and the worker transport are doubles.
+                    call_index = [0]
+                    def make_worker(*args, **kwargs):
+                        version = int(sys.argv[sys.argv.index('--policy-version') + 1])
+                        ties = all_ties or (second_ties and call_index[0] == 1)
+                        call_index[0] += 1
+                        return WorkerDouble(all_ties=ties, version=version)
+                    channel_mock.side_effect = make_worker
+                    def subprocess_episode(command, **kwargs):
+                        with patch.object(sys, 'argv', ['online-probe'] + command[4:]):
+                            return SimpleNamespace(returncode=online_probe.main())
+                    stack.enter_context(patch.object(online_session_probe.subprocess, 'run',
+                                                    side_effect=subprocess_episode))
+                    with patch.object(sys, 'argv', ['session', '--settings', str(settings),
+                            '--output', str(output), '--episodes', '2', '--steps', '8',
+                            '--mode', session_mode, '--throughput']):
+                        code = online_session_probe.main()
+                    summary = json.loads(output.read_text())
+                    self.assertEqual(code, 2 if all_ties else 0)
+                    self.assertEqual(summary['update_attempts'], 16)
+                    self.assertEqual(summary['final_policy_version'], 0 if all_ties else (1 if second_ties else 2))
+                    self.assertEqual(visual_module.load_frozen.call_count, 1 if session_mode == 'resident' else 2)
+                    self.assertEqual(visual_module.reset_temporal_state.call_count, int(session_mode == 'resident'))
+                    namespaces = frozen.module.planning_head.set_candidate_noise_namespace.call_args_list
+                    self.assertEqual([x.args[0] for x in namespaces],
+                        ['innovation3_visual_probe_seed0', 'innovation3_visual_probe_seed1000003'])
+                    reports = [json.loads(Path(e['report']).read_text()) for e in summary['episodes']]
+                    self.assertEqual(reports[1]['update_attempts_initial'], 8)
+                    self.assertEqual(reports[1]['cumulative_update_attempts'], 16)
+                    self.assertEqual(reports[1]['learner_state_hash_initial'], reports[0]['learner_state_hash_final'])
+                    state = torch.load(summary['final_checkpoint'], map_location='cpu')['learner']
+                    return summary, reports, state
                 code = online_probe.main()
                 report = json.loads(output.read_text())
                 command = popen.call_args.args[0]
@@ -213,6 +254,37 @@ class DriverTest(unittest.TestCase):
         self.assertGreater(report['throughput']['decisions_per_second'], 0.)
         self.assertEqual(report['events'][13]['forward_errors']['mode'],
                          'throughput_no_duplicate_oracle')
+
+    def test_two_episode_resident_matches_checkpoint_rebuild(self):
+        resident, resident_reports, resident_state = self.run_driver(session_mode='resident')
+        rebuild, rebuild_reports, rebuild_state = self.run_driver(session_mode='rebuild')
+        self.assertEqual(resident['status'], 'PASS_ONLINE_SESSION_RESIDENT_PARENT')
+        self.assertEqual(rebuild['status'], 'PASS_ONLINE_SESSION_REBUILD_REFERENCE')
+        self.assertEqual(digest_state(resident_state), digest_state(rebuild_state))
+        for left, right in zip(resident_reports, rebuild_reports):
+            self.assertEqual(left['actual_optimizer_steps'], 1)
+            self.assertEqual(left['update_attempts'], 8)
+            for a, b in zip(left['events'], right['events']):
+                if a['kind'] == 'online_update':
+                    for key in ('selected', 'candidate_hash', 'version_before', 'version_after',
+                                'optimizer_hash_after', 'residual_hash_after'):
+                        self.assertEqual(a[key], b[key], key)
+
+    def test_second_episode_without_signal_preserves_checkpoint_state(self):
+        for mode in ('resident', 'rebuild'):
+            with self.subTest(mode=mode):
+                summary, reports, _ = self.run_driver(session_mode=mode, second_ties=True)
+                self.assertTrue(summary['closed_loop_learning_verified'])
+                self.assertEqual(reports[1]['actual_optimizer_steps'], 0)
+                self.assertEqual(reports[1]['policy_version_initial'], 1)
+                self.assertEqual(reports[1]['policy_version'], 1)
+                self.assertFalse(reports[1]['online_update'])
+
+    def test_all_tied_session_is_executed_but_not_learning_pass(self):
+        summary, reports, _ = self.run_driver(session_mode='resident', all_ties=True)
+        self.assertEqual(summary['status'], 'INCOMPLETE_ONLINE_SESSION_RESIDENT_PARENT')
+        self.assertFalse(summary['closed_loop_learning_verified'])
+        self.assertEqual(len(reports), 2)
 
 
 if __name__=='__main__': unittest.main()

@@ -31,7 +31,8 @@ def _episode_settings(base, row, path, episode):
         online_scene_seed=(row['scene_seed'] + episode * stride) % (2**31),
         online_action_seed=(row['candidate_seed'] + episode * stride + 17) % (2**31),
     )
-    path.write_text(json.dumps(cfg, indent=2) + '\n')
+    with path.open('x') as stream:
+        stream.write(json.dumps(cfg, indent=2) + '\n')
 
 
 def main():
@@ -86,6 +87,8 @@ def main():
     started = time.monotonic()
     previous_checkpoint = None
     previous_version = 0
+    previous_learner_hash = None
+    learning_flags = dict(update_changed_logits=False, next_action_used_updated_policy=False)
     try:
         for episode in range(args.episodes):
             token = ledger.start_episode(row['scene_id'],
@@ -132,20 +135,40 @@ def main():
             if not report_path.exists():
                 raise RuntimeError('Episode %d did not produce a report' % episode)
             report = json.loads(report_path.read_text())
-            if report.get('status') != 'PASS_STRICT_ONLINE_THROUGHPUT_PROBE' and args.throughput:
-                raise RuntimeError('Episode %d did not pass strict throughput contract' % episode)
+            accepted = (('PASS_STRICT_ONLINE_THROUGHPUT_PROBE', 'INCOMPLETE_ONLINE_THROUGHPUT_EVIDENCE')
+                        if args.throughput else
+                        ('PASS_STRICT_ONLINE_SELECTOR_ONLY_PROBE', 'INCOMPLETE_ONLINE_LEARNING_EVIDENCE'))
+            if report.get('status') not in accepted:
+                raise RuntimeError('Episode %d failed execution contract' % episode)
+            if (report.get('frozen_generator_and_v3_unchanged') is not True or
+                    report.get('candidate_branches') != args.steps * 20 or
+                    report.get('idm_fallbacks') != 0 or
+                    report.get('worker_exit', {}).get('returncode') != 0 or
+                    report.get('worker_exit', {}).get('alive') is not False):
+                raise RuntimeError('Episode %d missing execution/cleanup evidence' % episode)
+            if (report.get('update_attempts_initial') != ledger.attempts or
+                    report.get('cumulative_update_attempts') != ledger.attempts + args.steps):
+                raise RuntimeError('Episode %d cumulative attempt mismatch' % episode)
+            if (previous_learner_hash is not None and
+                    report.get('learner_state_hash_initial') != previous_learner_hash):
+                raise RuntimeError('Episode %d did not preserve learner/optimizer/RNG state' % episode)
             initial = report.get('policy_version_initial', 0)
             if initial != previous_version or report.get('update_attempts') != args.steps:
                 raise RuntimeError('Episode %d learner boundary mismatch' % episode)
             version = report.get('policy_version')
             if type(version) is not int or version < previous_version:
                 raise RuntimeError('Episode %d policy version regressed' % episode)
+            if (report.get('actual_optimizer_steps') != version - previous_version or
+                    report.get('cumulative_optimizer_steps') != version):
+                raise RuntimeError('Episode %d optimizer count mismatch' % episode)
             for event in report.get('events', []):
                 if event.get('kind') != 'online_update':
                     continue
                 ledger.record_decision(token, event['version_before'],
-                                       event['version_after'], bool(event['optimized']))
+                                       event['version_after'], event['optimized'])
             receipt = ledger.close_episode(args.steps)
+            if ledger.policy_version != version:
+                raise RuntimeError('Episode %d event/report version mismatch' % episode)
             checkpoint = episode_output.with_suffix('.online.pt')
             if not checkpoint.exists():
                 raise RuntimeError('Episode %d missing learner checkpoint' % episode)
@@ -155,11 +178,19 @@ def main():
                 actual_optimizer_steps=report.get('actual_optimizer_steps'),
                 elapsed_seconds=report.get('elapsed_seconds'), launch_seconds=time.monotonic()-launch,
                 warmup_seconds=report.get('throughput', {}).get('warmup_seconds'),
-                ledger=receipt,
+                ledger=receipt, resident_reuse=report.get('resident_reuse'),
+                worker_exit=report['worker_exit'],
+                learner_state_hash_initial=report['learner_state_hash_initial'],
+                learner_state_hash_final=report['learner_state_hash_final'],
                 report=str(report_path), checkpoint=str(checkpoint), log=str(episode_log)))
             previous_checkpoint, previous_version = checkpoint, version
-        summary.update(status=('PASS_ONLINE_SESSION_RESIDENT_PARENT' if args.mode == 'resident'
-                               else 'PASS_ONLINE_SESSION_REBUILD_REFERENCE'),
+            previous_learner_hash = report['learner_state_hash_final']
+            for key in learning_flags:
+                learning_flags[key] |= report.get(key) is True
+            summary.update(actual_optimizer_steps=version, update_attempts=ledger.attempts)
+        verified = bool(previous_version and all(learning_flags.values()))
+        summary.update(status=('PASS_' if verified else 'INCOMPLETE_') + stage,
+                       closed_loop_learning_verified=verified, **learning_flags,
                        actual_optimizer_steps=previous_version,
                        update_attempts=args.episodes * args.steps,
                        elapsed_seconds=time.monotonic() - started,

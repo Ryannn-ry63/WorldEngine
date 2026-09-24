@@ -130,7 +130,11 @@ def main():
             learner.load_state_dict(payload['learner'])
             if learner.version != args.policy_version:
                 raise ValueError('Resume checkpoint/version mismatch')
+        if learner.version != args.policy_version:
+            raise ValueError('Episode initial policy version mismatch')
         initial_policy_version = learner.version
+        initial_attempts = learner.attempts
+        initial_learner_hash = state_digest(learner.state_dict())
         online = LiveLearning(learner)
         initial_residual_hash = online.last_residual_hash
         live = LiveInputs(config.data.test)
@@ -269,7 +273,9 @@ def main():
         if source_hashes() != report['source_sha256']:
             raise RuntimeError('Source changed during acceptance run')
         evidence = learning_evidence(report['events'])
-        if evidence['actual_optimizer_steps'] != learner.version or learner.attempts != args.steps:
+        if (evidence['actual_optimizer_steps'] != learner.version - initial_policy_version or
+                learner.attempts - initial_attempts != args.steps or
+                evidence['update_attempts'] != args.steps):
             raise RuntimeError('Optimizer/attempt accounting mismatch')
         checkpoint = output.with_suffix('.online.pt')
         with checkpoint.open('xb') as stream:
@@ -294,8 +300,12 @@ def main():
                     ('PASS_STRICT_ONLINE_SELECTOR_ONLY_PROBE' if verified else
                      'INCOMPLETE_ONLINE_LEARNING_EVIDENCE')),
             real_generator=True, live_render_verified=True, real_generated_reward=True,
-            online_update=learner.version > 0, real_closed_loop=verified,
-            actual_optimizer_steps=learner.version, update_attempts=learner.attempts,
+            online_update=evidence['actual_optimizer_steps'] > 0, real_closed_loop=verified,
+            cumulative_optimizer_steps=learner.version, cumulative_update_attempts=learner.attempts,
+            update_attempts_initial=initial_attempts,
+            learner_state_hash_initial=initial_learner_hash,
+            learner_state_hash_final=state_digest(learner.state_dict()),
+            worker_exit=dict(pid=child.pid, returncode=child.returncode, alive=child.poll() is None),
             frozen_generator_and_v3_unchanged=True, frozen_generator_sha256=initial_model_hash,
             residual_changed=initial_residual_hash != online.last_residual_hash,
             policy_version=learner.version, step0_v3_parity=True, next_step_waited_for_update=True,
