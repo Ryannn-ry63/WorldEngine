@@ -20,6 +20,8 @@ def main():
                         help='persistent CPU SimEngine workers per online rank (efficiency pilot)')
     parser.add_argument('--episodes', type=int, default=16,
                         help='continuous online-session episodes')
+    parser.add_argument('--session-mode', choices=('rebuild', 'resident'), default='rebuild',
+                        help='online session resource lifecycle')
     parser.add_argument('stage', choices=['preflight', 'learner-smoke', 'snapshot-probe', 'h1-protocol-probe', 'visual-probe', 'live-reward-probe', 'online-probe', 'online-throughput-probe', 'online-session-probe', 'ddp-h1-probe', 'ddp-online-throughput-probe', 'reward-probe'])
     args = parser.parse_args()
     if args.steps is None:
@@ -71,7 +73,8 @@ def main():
         env.update(OPENBLAS_CORETYPE='Prescott', OMP_NUM_THREADS='1',
                    OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')
         command += ['--steps', str(args.steps), '--seed', str(args.seed),
-                    '--episodes', str(args.episodes), '--throughput']
+                    '--episodes', str(args.episodes), '--mode', args.session_mode,
+                    '--throughput']
         if args.branch_workers:
             command += ['--branch-workers', str(args.branch_workers)]
     elif args.stage == 'ddp-h1-probe':

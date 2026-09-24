@@ -20,6 +20,10 @@ from .paths import checked_path, sha256_file
 from .transport import Channel
 
 
+_RESIDENT_MODEL = None
+_RESIDENT_LEARNER = None
+
+
 def source_hashes():
     code = Path(__file__).resolve().parents[5]
     paths = list(Path(__file__).parent.glob('*.py'))
@@ -48,6 +52,8 @@ def main():
                         help='resume the learner/optimizer/RNG at a completed episode boundary')
     parser.add_argument('--policy-version', type=int, default=0,
                         help='learner version expected by the episode worker')
+    parser.add_argument('--resident', action='store_true',
+                        help='keep model and learner alive for the caller\'s next episode')
     parser.add_argument('--branch-workers', type=int, default=0,
                         help='experimental persistent CPU SimEngine branch workers (0 keeps serial H1)')
     args = parser.parse_args()
@@ -94,13 +100,21 @@ def main():
         from .live_inputs import LiveInputs
         from .visual_model import configuration, load_frozen
         from .visual_parity import assert_same, file_oracle, result_parity
-        torch.manual_seed(candidate_seed)
-        np.random.seed(candidate_seed)
+        global _RESIDENT_MODEL, _RESIDENT_LEARNER
+        resident_reuse = bool(args.resident and _RESIDENT_MODEL is not None)
+        if not resident_reuse:
+            torch.manual_seed(candidate_seed)
+            np.random.seed(candidate_seed)
         config = configuration(cfg, candidate_seed)
-        model = load_frozen(config, cfg)
-        selector = model.module.planning_head.scene_selector
+        if resident_reuse:
+            model, learner = _RESIDENT_MODEL, _RESIDENT_LEARNER
+        else:
+            model = load_frozen(config, cfg)
+            selector = model.module.planning_head.scene_selector
+            learner = OnlineV3Learner(selector, seed=action_seed)
+            if args.resident:
+                _RESIDENT_MODEL, _RESIDENT_LEARNER = model, learner
         initial_model_hash = state_digest(model.state_dict())
-        learner = OnlineV3Learner(selector, seed=action_seed)
         if args.resume:
             resume = checked_path(args.resume)
             payload = torch.load(resume, map_location='cpu')

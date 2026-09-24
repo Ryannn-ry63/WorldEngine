@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import contextlib
+import sys
 import time
 
 from .paths import checked_path
@@ -40,7 +42,7 @@ def main():
     parser.add_argument('--episodes', type=int, default=16)
     parser.add_argument('--steps', type=int, default=8)
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--mode', choices=('rebuild',), default='rebuild')
+    parser.add_argument('--mode', choices=('rebuild', 'resident'), default='rebuild')
     parser.add_argument('--throughput', action='store_true')
     parser.add_argument('--branch-workers', type=int, default=0)
     args = parser.parse_args()
@@ -98,12 +100,29 @@ def main():
                 command.append('--throughput')
             if args.branch_workers:
                 command += ['--branch-workers', str(args.branch_workers)]
-            if previous_checkpoint:
+            if args.mode == 'resident':
+                command.append('--resident')
+            elif previous_checkpoint:
                 command += ['--resume', str(previous_checkpoint)]
             launch = time.monotonic()
-            with episode_log.open('x') as log:
-                process = subprocess.run(command, env=os.environ.copy(), stdout=log,
-                                         stderr=subprocess.STDOUT, check=False)
+            if args.mode == 'resident':
+                # Keep the model/learner process alive. The visual worker is
+                # still rebuilt per episode until its persistent channel is
+                # added; this mode isolates the parent startup saving first.
+                from . import online_probe
+                old_argv = sys.argv
+                with episode_log.open('x') as log, contextlib.redirect_stdout(log), \
+                        contextlib.redirect_stderr(log):
+                    sys.argv = ['innovation3.online_probe'] + command[4:]
+                    try:
+                        return_code = online_probe.main()
+                    finally:
+                        sys.argv = old_argv
+                process = type('Result', (), {'returncode': return_code})()
+            else:
+                with episode_log.open('x') as log:
+                    process = subprocess.run(command, env=os.environ.copy(), stdout=log,
+                                             stderr=subprocess.STDOUT, check=False)
             if process.returncode not in (0, 2):
                 raise RuntimeError('Episode %d failed with code %d; log=%s' %
                                    (episode, process.returncode, episode_log))
