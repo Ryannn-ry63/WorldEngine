@@ -121,7 +121,6 @@ def main():
         # episode seed even though resident keeps the model object alive.
         model.module.planning_head.set_candidate_noise_namespace(
             config.model.planning_head.candidate_noise_namespace)
-        initial_policy_version = learner.version
         initial_model_hash = state_digest(model.state_dict())
         if args.resume:
             resume = checked_path(args.resume)
@@ -131,6 +130,7 @@ def main():
             learner.load_state_dict(payload['learner'])
             if learner.version != args.policy_version:
                 raise ValueError('Resume checkpoint/version mismatch')
+        initial_policy_version = learner.version
         online = LiveLearning(learner)
         initial_residual_hash = online.last_residual_hash
         live = LiveInputs(config.data.test)
