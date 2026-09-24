@@ -98,7 +98,19 @@ class RenderManager(BaseManager):
         pass
 
     def close(self):
-        pass
+        renderer = getattr(self, 'renderer', None)
+        if renderer is not None:
+            destroy = getattr(renderer, 'destroy', None)
+            if callable(destroy):
+                destroy()
+            self.renderer = None
+        cache = getattr(self, 'rendering_results', None)
+        if cache is not None:
+            cache.clear()
 
     def destroy(self):
-        pass
+        self.close()
+        for name in ('current_scene', 'current_scene_id', 'base_timestamp',
+                     'local2global_translation_xy'):
+            if hasattr(self, name):
+                setattr(self, name, None)

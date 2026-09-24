@@ -34,6 +34,15 @@ class RenderMemoryTest(unittest.TestCase):
         self.engine.data_manager.save_current_frame_data.assert_not_called()
         self.assertEqual(self.render.rendering_results, {})
 
+    def test_close_releases_renderer_and_cached_frames(self):
+        renderer = Mock()
+        self.render.renderer = renderer
+        self.render.rendering_results[0] = self.images
+        RenderManager.close(self.render)
+        renderer.destroy.assert_called_once_with()
+        self.assertIsNone(self.render.renderer)
+        self.assertEqual(self.render.rendering_results, {})
+
     def test_render_does_not_translate_agent_owned_bounding_box(self):
         class Policy:
             is_current_step_valid = True

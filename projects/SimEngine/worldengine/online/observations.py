@@ -102,3 +102,21 @@ class CanonicalObserver:
                                json.dumps(mismatch.details, sort_keys=True, default=str))
         self.sim.codec.audit_static()
         return frame, images, before.state_hash
+
+    def close(self):
+        """Release renderer and per-episode history before engine teardown."""
+        history = getattr(self, 'history', None)
+        if history is not None:
+            history.raw.clear()
+            history.frames.clear()
+        render = getattr(self, 'render', None)
+        if render is not None:
+            render.destroy()
+            self.render = None
+        data = getattr(self, 'data', None)
+        if data is not None:
+            for name in ('episode_data', 'episode_data_processed', 'seq_index'):
+                value = getattr(data, name, None)
+                if hasattr(value, 'clear'):
+                    value.clear()
+            self.data = None

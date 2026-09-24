@@ -243,6 +243,8 @@ def main():
     finally:
         if branch_pool is not None:
             branch_pool.close(abort=True)
+        if 'observer' in locals() and observer is not None:
+            observer.close()
         if sim is not None:
             sim.close()
         images.close()
