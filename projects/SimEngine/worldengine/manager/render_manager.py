@@ -100,9 +100,41 @@ class RenderManager(BaseManager):
     def close(self):
         renderer = getattr(self, 'renderer', None)
         if renderer is not None:
+            # Some renderer implementations are instantiated through Hydra
+            # and do not run BaseRunnable.__init__, so their inherited
+            # destroy() cannot assume ``_config`` exists. Release the large
+            # GPU-owned containers explicitly before invoking that hook.
+            for name in ('gaussian_models', 'sensor_caches',
+                         'digitaltwin_agent2states', 'rendering_results'):
+                value = getattr(renderer, name, None)
+                if value is not None:
+                    try:
+                        if hasattr(value, 'clear'):
+                            value.clear()
+                    finally:
+                        try:
+                            delattr(renderer, name)
+                        except AttributeError:
+                            pass
+            asset_manager = getattr(renderer, 'asset_manager', None)
+            if asset_manager is not None:
+                for name in ('background_asset', 'road_height_map'):
+                    try:
+                        value = getattr(asset_manager, name)
+                        if hasattr(value, 'cpu'):
+                            value.cpu()
+                        delattr(asset_manager, name)
+                    except AttributeError:
+                        pass
             destroy = getattr(renderer, 'destroy', None)
-            if callable(destroy):
+            if callable(destroy) and hasattr(renderer, '_config'):
                 destroy()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
             self.renderer = None
         cache = getattr(self, 'rendering_results', None)
         if cache is not None:
