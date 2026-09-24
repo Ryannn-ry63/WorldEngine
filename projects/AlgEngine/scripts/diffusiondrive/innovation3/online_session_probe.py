@@ -14,6 +14,7 @@ import time
 
 from .paths import checked_path
 from .scene_manifest import load_assignments
+from .session_lifecycle import SessionLedger
 
 
 def _episode_settings(base, row, path, episode):
@@ -77,11 +78,14 @@ def main():
                    episodes_requested=args.episodes, steps_per_episode=args.steps,
                    decision_opportunities=args.episodes * args.steps, assignment=assignment,
                    episodes=[], actual_optimizer_steps=0, update_attempts=0)
+    ledger = SessionLedger(output.stem, policy_version=0)
     started = time.monotonic()
     previous_checkpoint = None
     previous_version = 0
     try:
         for episode in range(args.episodes):
+            token = ledger.start_episode(row['scene_id'],
+                                         (row['scene_seed'] + episode * 1000003) % (2**31))
             episode_output = output.with_name(output.stem + '.episode%02d.json' % episode)
             episode_settings = output.with_name(output.stem + '.episode%02d.settings.json' % episode)
             episode_log = output.with_name(output.stem + '.episode%02d.log' % episode)
@@ -115,6 +119,12 @@ def main():
             version = report.get('policy_version')
             if type(version) is not int or version < previous_version:
                 raise RuntimeError('Episode %d policy version regressed' % episode)
+            for event in report.get('events', []):
+                if event.get('kind') != 'online_update':
+                    continue
+                ledger.record_decision(token, event['version_before'],
+                                       event['version_after'], bool(event['optimized']))
+            receipt = ledger.close_episode(args.steps)
             checkpoint = episode_output.with_suffix('.online.pt')
             if not checkpoint.exists():
                 raise RuntimeError('Episode %d missing learner checkpoint' % episode)
@@ -124,6 +134,7 @@ def main():
                 actual_optimizer_steps=report.get('actual_optimizer_steps'),
                 elapsed_seconds=report.get('elapsed_seconds'), launch_seconds=time.monotonic()-launch,
                 warmup_seconds=report.get('throughput', {}).get('warmup_seconds'),
+                ledger=receipt,
                 report=str(report_path), checkpoint=str(checkpoint), log=str(episode_log)))
             previous_checkpoint, previous_version = checkpoint, version
         summary.update(status='PASS_ONLINE_SESSION_REBUILD_REFERENCE',
@@ -132,6 +143,7 @@ def main():
                        elapsed_seconds=time.monotonic() - started,
                        final_checkpoint=str(previous_checkpoint),
                        final_policy_version=previous_version,
+                       ledger_boundary=ledger.boundary(),
                        formal_ready=False, used_for_formal_training=False)
     except BaseException as error:
         summary.update(status='FAIL_ONLINE_SESSION_REBUILD_REFERENCE', error=repr(error),
