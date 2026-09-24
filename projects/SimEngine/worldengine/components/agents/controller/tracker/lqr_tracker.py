@@ -147,9 +147,17 @@ class LQRTracker(AbstractTracker):
         if len(self.waypoints) == 0:
             raise ValueError("The waypoints should not be empty.")
         self.route = CenterLane(self.waypoints, width=2, segment_threshold=1, segment_eps=1e-6)
-        self._start_time = 0
+        self._start_time = getattr(self, '_online_elapsed', 0.)
         self._planning_frame_rate = self.agent.config['planning_frame_rate']
         self._end_time = (len(self.waypoints) - 1) * self._planning_frame_rate
+
+        # CenterLane collapses a stationary trajectory to a synthetic segment
+        # with start_idx == end_idx == 0. It has no interpolation time domain.
+        # A genuine zero-motion request should brake, not enter interp1d or use
+        # that synthetic lane's arbitrary heading for lateral control.
+        if (self.config.get('online_corrected_bicycle', False) and
+                np.max(np.linalg.norm(self.waypoints - self.waypoints[0], axis=1)) < 1e-6):
+            return self._stopping_controller(float(self.agent.current_speed), 0.)
 
         initial_velocity, initial_lateral_state_vector = self._compute_initial_velocity_and_lateral_state()
 

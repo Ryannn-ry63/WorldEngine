@@ -8,14 +8,16 @@ from the live observation. The frozen generator supplies original base logits.
 import copy
 import math
 import torch
-from grpo_selector_v3_cached_common import exact_group_loss, normalized_advantage
+from grpo_selector_v3_cached_common import (clip_grad_norm_cpu_, exact_group_loss,
+                                            normalized_advantage)
 
 CONTEXT_KEYS = frozenset(("candidate_features", "candidate_trajectories",
                           "route_bev_features", "status_token", "ego_query", "agents_query"))
 
 
 class OnlineV3Learner:
-    def __init__(self, selector, learning_rate=3e-5, kl_weight=1e-3, seed=0):
+    def __init__(self, selector, learning_rate=3e-5, kl_weight=1e-3, seed=0,
+                 gradient_reducer=None, update_coordinator=None):
         if not math.isfinite(learning_rate) or learning_rate <= 0:
             raise ValueError("Invalid learning rate")
         if not math.isfinite(kl_weight) or kl_weight < 0:
@@ -33,6 +35,12 @@ class OnlineV3Learner:
         self.rng = torch.Generator(device=next(selector.parameters()).device)
         self.rng.manual_seed(seed)
         self.pending = None
+        if gradient_reducer is not None and not callable(gradient_reducer):
+            raise TypeError("gradient_reducer must be callable")
+        if update_coordinator is not None and not callable(update_coordinator):
+            raise TypeError("update_coordinator must be callable")
+        self.gradient_reducer = gradient_reducer
+        self.update_coordinator = update_coordinator
 
     def choose(self, context, base_logits, decision_id):
         if self.pending is not None:
@@ -83,13 +91,30 @@ class OnlineV3Learner:
             raise RuntimeError("Non-finite online loss")
         if optimized:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.selector.parameters(), 1.0, error_if_nonfinite=True)
+        globally_optimized = optimized
+        if self.update_coordinator is not None:
+            globally_optimized = bool(self.update_coordinator(
+                self.selector.parameters(), optimized))
+        elif optimized and self.gradient_reducer is not None:
+            self.gradient_reducer(self.selector.parameters())
+        if globally_optimized:
+            # A distributed coordinator may have supplied zero gradients for a
+            # locally tied group whose peer has a real signal.
+            # The registered PyTorch/CUDA stack can dispatch an unsupported
+            # vector_norm kernel on H100.  The selector is small, so compute
+            # the exact global norm on the host while keeping gradients on the
+            # device.  This preserves the training contract on both GPUs.
+            clip_grad_norm_cpu_(self.selector.parameters(), 1.0)
             self.optimizer.step()
             self.version += 1
-        # Ties are recorded as no-signal; no AdamW weight decay or fake version increment.
+        # A step is skipped only when every rank (or the single rank) has no
+        # group signal; no AdamW weight decay or fake version increment.
         self.attempts += 1
         self.pending = None
-        return dict(policy_version=self.version, optimized=optimized, attempts=self.attempts,
+        return dict(policy_version=self.version, optimized=globally_optimized, attempts=self.attempts,
+                    local_group_signal=optimized,
+                    reward_std=float(rewards.std(unbiased=False)),
+                    skip_reason=None if globally_optimized else 'no_group_signal_std_le_1e-6',
                     loss=float(loss.detach()), policy_loss=float(policy.detach()), kl=float(kl.detach()),
                     training_inference_max_abs_logit_drift=self.logit_drift)
 

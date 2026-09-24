@@ -1,3 +1,5 @@
+import math
+
 from worldengine.components.agents.controller.abstract_controller import AbstractController
 from worldengine.components.agents.controller.motion_model.build_motion_model import build_motion_model
 from worldengine.components.agents.controller.tracker.build_tracker import build_tracker
@@ -25,6 +27,23 @@ class TwoStageController(AbstractController):
 
     def step(self):
         """Inherited, see superclass."""
+        if self.agent.config.get('online_corrected_bicycle', False) and self.agent.trajectory is not None:
+            # Recompute low-level control at its configured 0.1 s resolution;
+            # one external action still advances exactly the 0.5 s H1 interval.
+            duration = self._motion_model._frame_rate
+            count = max(1, math.ceil(duration / self._tracker._discretization_time))
+            dt = duration / count
+            try:
+                self._motion_model._frame_rate = dt
+                for index in range(count):
+                    self._tracker._online_elapsed = index * dt
+                    accel_cmd, steering_rate_cmd = self._tracker.track_trajectory()
+                    self._motion_model.propagate_state(accel_cmd, steering_rate_cmd)
+            finally:
+                self._motion_model._frame_rate = duration
+                if hasattr(self._tracker, '_online_elapsed'):
+                    del self._tracker._online_elapsed
+            return
         if self.agent.trajectory is not None:
             for attr in ['waypoints', 'velocities', 'headings', 'angular_velocities']:
                 if hasattr(self.agent.trajectory, attr):

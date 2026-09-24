@@ -28,7 +28,7 @@ def dynamics_config(reaction, max_steps):
     for key in list(cfg):
         if key in ('hydra', 'defaults') or '${' in str(cfg[key]):
             del cfg[key]
-    cfg.update(max_step=max_steps, decision_repeat=1, online_deterministic_rng=True,
+    cfg.update(max_step=max_steps, decision_repeat=1, online_deterministic_rng=True, online_corrected_bicycle=True,
                ego_policy='env_input_policy', ego_controller='two_stage_controller',
                ego_navigation='trajectory_navigation', ego_client='base_client',
                agent_policy='idm_policy' if reaction == 'R' else 'trajectory_policy',
@@ -41,7 +41,7 @@ def dynamics_config(reaction, max_steps):
 
 
 class HeadlessSimulator:
-    def __init__(self, scene_id, scene, reaction='R', max_steps=8, seed=0):
+    def __init__(self, scene_id, scene, reaction='R', max_steps=8, seed=0, global_config=None):
         check_numeric_runtime()
         if engine_utils.engine_initialized():
             raise RuntimeError('Use spawn processes: one SimEngine per process')
@@ -51,7 +51,11 @@ class HeadlessSimulator:
             raise ValueError('This adapter currently requires a 0.5 s planning interval')
         np.random.seed(seed)
         random.seed(seed)
-        cfg = dynamics_config(reaction, max_steps)
+        # Branch workers receive the already-created parent config. Rebuilding
+        # CanonicalObserver adds asset_folder_path and renderer metadata to it;
+        # a fresh dynamics_config omits these and fails strict config_hash parity.
+        cfg = (OmegaConf.create(OmegaConf.to_container(global_config, resolve=False))
+               if global_config is not None else dynamics_config(reaction, max_steps))
         engine_utils.initialize_global_config(cfg)
         self.engine = engine_utils.initialize_engine(cfg)
         try:

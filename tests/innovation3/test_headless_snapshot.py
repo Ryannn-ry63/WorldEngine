@@ -93,6 +93,12 @@ class HeadlessSnapshotTest(unittest.TestCase):
         self.assertNotIn('leaving', self.sim.engine.agents)
 
     def test_full20_preserves_main_and_candidate_bank(self):
+        # At 15 m the corrected dynamics put every candidate at IDM's maximum
+        # braking limit. A 40 m gap exercises a responsive, unsaturated follower.
+        self.sim.close()
+        scene = scene_fixture()
+        scene['object_track']['follower']['state']['position'][:, 0] -= 25.
+        self.sim = HeadlessSimulator('fixture', scene, 'R', 8, seed=17)
         actions = diagnostic_candidates(self.sim)
         original_actions = structural_hash(actions)
         before, main, results = self.sim.branch_group(actions, 12)

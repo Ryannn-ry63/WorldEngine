@@ -1,6 +1,7 @@
 """CPU-only window and receipt validation for the bounded live probe."""
 from collections import deque
 import math
+from .protocol import Action, Feedback, StepGate, StepIdentity
 
 REWARD_KEYS = {'reward', 'NC', 'DAC', 'EP', 'TTC', 'comfort', 'direction',
                'progress_m', 'reference_progress_m'}
@@ -51,3 +52,67 @@ def validate_receipts(identity, selected, candidate_hash, main, branches, with_r
             main['reward'] != branches['reward'] or main['reward'] != rewards[selected] or
             not branches.get('history_before_hash') or not branches.get('history_after_hash')):
         raise ValueError('Independent main reward/history receipt mismatch')
+
+
+class LiveStepGate:
+    """Same strict wire gate in both interpreters; only the parent owns learning."""
+    def __init__(self):
+        self.gate = StepGate(reward_atol=0.)
+        self.raw_identity = None
+        self.main = None
+        self.history_hash = None
+
+    def observe(self, identity):
+        if type(identity.get('policy_version')) is not int:
+            raise ValueError('Integral policy version required')
+        self.gate.observe(StepIdentity(identity['scene'], identity['step'],
+                                       identity['policy_version'], identity['state_hash']))
+        self.raw_identity = dict(identity)
+        self.main = None
+
+    def choose(self, request):
+        if request.get('kind') != 'action' or request.get('identity') != self.raw_identity:
+            raise ValueError('Action wire identity mismatch')
+        self.gate.choose(Action(self.gate.identity, request['candidate_hash'],
+                                request['selected'], tuple(request['probabilities'])))
+
+    def main_executed(self, main):
+        if (main.get('kind') != 'main' or main.get('identity') != self.raw_identity or
+                self.gate.action is None or
+                main.get('candidate_hash') != self.gate.action.candidate_hash or
+                main.get('selected') != self.gate.action.selected):
+            raise ValueError('Independent main receipt identity mismatch')
+        self.gate.main_executed(main['next_hash'])
+        self.main = main
+
+    def feedback(self, branches):
+        if self.main is None:
+            raise RuntimeError('Feedback arrived before main execution')
+        action = self.gate.action
+        validate_receipts(self.raw_identity, action.selected, action.candidate_hash,
+                          self.main, branches, True)
+        if self.history_hash is not None and branches['history_before_hash'] != self.history_hash:
+            raise RuntimeError('Reward history did not continue from canonical execution')
+        # Preserve original JSON scalars for exact selected/main parity.
+        # Conversion to learner precision happens only AFTER this gate.
+        self.gate.feedback(Feedback(self.gate.identity, action.candidate_hash,
+            tuple(r['reward'] for r in branches['rewards']), (True,) * 20,
+            self.main['reward']['reward'], self.main['next_hash'],
+            branches['branch_hashes'][action.selected]))
+        self.history_hash = branches['history_after_hash']
+
+    def updated(self, ack):
+        if self.gate.phase != 'feedback':
+            raise RuntimeError('Update acknowledgement requires accepted feedback')
+        expected = dict(kind='feedback_ack', identity=self.raw_identity,
+                        candidate_hash=self.gate.action.candidate_hash,
+                        next_hash=self.gate.next_hash)
+        if set(ack) != set(expected) | {'policy_version', 'optimized'} or any(
+                ack[k] != v for k, v in expected.items()):
+            raise ValueError('Stale or mismatched optimizer acknowledgement')
+        if type(ack['policy_version']) is not int:
+            raise ValueError('Integral optimizer version required')
+        self.gate.updated(ack['policy_version'], ack['optimized'])
+        return dict(kind='updated', identity=self.raw_identity,
+                    candidate_hash=self.gate.action.candidate_hash,
+                    next_hash=self.gate.next_hash, policy_version=self.gate.policy_version)

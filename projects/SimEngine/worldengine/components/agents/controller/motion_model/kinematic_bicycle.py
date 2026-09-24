@@ -28,6 +28,10 @@ class KinematicBicycleModel(AbstractMotionModel):
         """Inherited, see super class."""
         cur_accel_vector = self.agent.rear_vehicle.current_acceleration
         cur_accel_value = math_utils.norm(cur_accel_vector[0], cur_accel_vector[1])
+        if self.config.get('online_corrected_bicycle', False):
+            heading = float(self.agent.rear_vehicle.current_heading)
+            cur_accel_value = (cur_accel_vector[0] * np.cos(heading) +
+                               cur_accel_vector[1] * np.sin(heading))
         cur_steering_angle = self.agent.current_tire_steering
 
         updated_accel_value = (
@@ -35,9 +39,13 @@ class KinematicBicycleModel(AbstractMotionModel):
             (accel_cmd - cur_accel_value) + cur_accel_value
         )
 
+        # Tracker returns rad/s, while this filter consumes an angle target.
+        steering_target = steering_rate_cmd
+        if self.config.get('online_corrected_bicycle', False):
+            steering_target = cur_steering_angle + self._frame_rate * steering_rate_cmd
         updated_steering_angle = (
             self._frame_rate / (self._frame_rate + self._steering_angle_time_constant) *
-            (steering_rate_cmd - cur_steering_angle) + cur_steering_angle
+            (steering_target - cur_steering_angle) + cur_steering_angle
         )
         updated_steering_rate = (updated_steering_angle - cur_steering_angle) / self._frame_rate
 

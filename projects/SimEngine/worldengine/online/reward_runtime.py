@@ -1,11 +1,13 @@
 """Live SimEngine to causal PDM adapter. Static route input is read at reset only."""
 import copy
 import numpy as np
+from shapely.geometry import Point
 from nuplan.common.maps.nuplan_map.map_factory import get_maps_api
 from worldengine.components.agents.policy.pdm_planner.abstract_pdm_planner import AbstractPDMPlanner
 from worldengine.components.agents.policy.pdm_planner.observation.pdm_occupancy_map import PDMDrivableMap
 from worldengine.components.agents.policy.pdm_planner.utils.pdm_path import PDMPath
 from .reward import RewardHistory, H1Reward, capture_reward_frame, ego_state
+from worldengine.common.dataclasses import Trajectory
 
 
 class RouteGeometry(AbstractPDMPlanner):
@@ -53,6 +55,42 @@ class RewardSession:
         if before.state_hash != after.state_hash:
             raise self.sim.codec.mismatch('Reward capture mutated dynamics', before, before, after, None)
         return result
+
+    def warmup_action(self):
+        """Current-state/map-only warmup, slowing before the finite route end.
+
+        Trajectory uses centered-vehicle positions at 0.5 s intervals. Start at
+        the live pose, use local map tangents, and never extrapolate the route.
+        This is engineering history initialization, not a learned action.
+        """
+        ego = self.sim.engine.agent_manager.ego_agent
+        center = np.asarray(ego.current_position, dtype=float)[:2]
+        line = self.centerline.linestring
+        projected = float(line.project(Point(*(center + self.offset))))
+        remaining = max(float(line.length) - projected, 0.)
+        # A four-second time-to-end cap gives the real controller room to brake.
+        # Do not force a minimum speed or an eight-metre horizon on a short route.
+        speed = min(max(float(ego.current_speed), 0.), remaining / 4.)
+        times = np.arange(9, dtype=float) * .5
+        distances = projected + speed * times
+        xy = np.asarray([line.interpolate(float(d)).coords[0] for d in distances])
+        xy = xy - self.offset[None, :]
+        # Local tangents, not chords from the first point on a curved route.
+        lo = np.maximum(distances - .05, 0.)
+        hi = np.minimum(distances + .05, line.length)
+        tangents = np.asarray([np.asarray(line.interpolate(float(h)).coords[0]) -
+                               np.asarray(line.interpolate(float(l)).coords[0])
+                               for l, h in zip(lo, hi)])
+        headings = np.arctan2(tangents[:, 1], tangents[:, 0])
+        if speed <= 1e-6:
+            xy[:] = center
+            headings[:] = float(ego.current_heading)
+        else:
+            xy[0] = center
+            headings[0] = float(ego.current_heading)
+        if not np.isfinite(xy).all() or not np.isfinite(headings).all():
+            raise ValueError('Non-finite map warmup trajectory')
+        return Trajectory(xy, headings=headings)
 
     def warmup(self, action):
         self.sim.step(action)

@@ -1,5 +1,10 @@
 # Innovation 3: live selector updates
 
+Current single-GPU learner integration and acceptance criteria are in
+[online_learning.md](online_learning.md). The live candidate and causal reward
+bridges have prior H100 acceptance; the new residual-update path needs its own
+target-GPU run. Historical probe descriptions below retain their original scope.
+
 This branch starts from the clean standard V3 contribution and preserves the
 upstream Git history. Memory rendering and deterministic actor RNG are opt-in; existing evaluation
 keeps its file-based behavior and upstream RNG defaults. A map namedtuple also
@@ -30,8 +35,9 @@ The active second-version protocol freezes the **trained V3** and adds a new
 online correction: `current_logits = frozen_V3_logits + online_residual`.
 The correction uses a separate V3-shaped module, copies V3's encoder initialization,
 and zeros only its final output projection. The existing V3 weights are preserved;
-only the new correction belongs to the optimizer. Initial actions exactly reproduce
-V3. In PyTorch 2.0, action selection uses the no-grad eval path; a separate autograd
+only the new correction belongs to the optimizer. Initial logits and probabilities
+exactly reproduce V3; online categorical sampling is distinct from evaluation argmax.
+In PyTorch 2.0, action selection uses the no-grad eval path; a separate autograd
 forward records numerical differences (atol 1e-5, rtol 1e-4 guard). No-signal groups
 skip AdamW entirely and record an unchanged policy version.
 
@@ -97,18 +103,19 @@ Snapshot payloads are trusted local pickles, not an untrusted network format.
 There is intentionally no production training command yet. Remaining work:
 
 1. Verify log-disjoint scene/image/map/asset coverage; directory existence is not coverage.
-2. Implement live observation preprocessing, temporal state and bounded shared-memory IPC.
-3. Extend the verified headless dynamics boundary to the rendered main process
-   and add explicit future-free reward histories/accumulators. Snapshot schema 1
-   deliberately rejects engines with renderer/data/metric/reward managers: it
-   does not certify complete rendered-main or reward parity. Do not remove that
-   guard without implementing and testing the missing state adapters.
-4. Define and test H1 reward windows, progress reference and component semantics.
-5. Connect generator, protocol gate, actual simulator feedback and learner; validate
-   one real episode and then DDP, synchronized scene-boundary recovery and throughput.
+2. The bounded H100 learner integration is now accepted with the live
+   preprocessing, bounded shared-memory transport and separate reward history.
+   Production-like throughput and complete renderer/simulator/learner recovery
+   remain unverified; the dynamics snapshot guard still rejects unadapted
+   managers.
+3. Keep the versioned H1 reward window/reference contract fixed while measuring
+   signal sufficiency across the training-source manifest.
+4. One real learning episode and synthetic DDP/scene-boundary recovery are
+   accepted. Run the real production-like throughput pilot, then validate
+   real-feedback multi-rank DDP and synchronized recovery.
    Export and inference must preserve both frozen V3 and the new residual; the old
    single-V3 materializer cannot represent this parameterization unchanged.
-6. Test longer branches and controls after strict H1 validation. A value/TD head is
+5. Test longer branches and controls after strict H1 validation. A value/TD head is
    optional if long-term feedback is insufficient, and must be a separate condition.
 
 Existing SimEngine metrics are not an off-the-shelf future-free H1 reward:

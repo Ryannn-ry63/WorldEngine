@@ -30,7 +30,7 @@ def configuration(cfg, seed):
     return config
 
 
-def load_frozen(config, cfg):
+def load_frozen(config, cfg, device_id=None):
     for key in ('baseline', 'selector_state', 'anchors'):
         checked_path(cfg[key])
         if sha256_file(cfg[key]) != cfg['expected_sha256'][key]:
@@ -57,5 +57,12 @@ def load_frozen(config, cfg):
     model.eval().requires_grad_(False)
     if not model.skip_tracking:
         raise ValueError('Visual bridge currently supports the configured frozen skip_tracking path only')
-    model = MMDataParallel(model.cuda(), device_ids=[0])
+    # ``device_ids=[0]`` is only correct when the process exposes one GPU.
+    # Real DDP workers keep the full explicit CUDA_VISIBLE_DEVICES list and
+    # select their local rank before entering NCCL.  Use that selected device
+    # both for the model and for MMDataParallel so ranks cannot alias GPU 0.
+    if device_id is None:
+        device_id = torch.cuda.current_device()
+    device_id = int(device_id)
+    model = MMDataParallel(model.cuda(device_id), device_ids=[device_id])
     return model

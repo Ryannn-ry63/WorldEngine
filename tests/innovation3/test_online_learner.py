@@ -39,6 +39,32 @@ class LearnerTest(unittest.TestCase):
         self.assertTrue(all(torch.equal(v, self.learner.reference.state_dict()[k]) for k,v in before['reference'].items()))
         self.assertTrue(any(not torch.equal(v, self.learner.selector.state_dict()[k]) for k,v in before['selector'].items()))
 
+    def test_gradient_reducer_runs_only_for_signal_updates(self):
+        calls = []
+        def reducer(parameters):
+            parameters = list(parameters)
+            calls.append(sum(parameter.grad is not None for parameter in parameters))
+        learner = OnlineV3Learner(model(), gradient_reducer=reducer)
+        learner.choose(self.x, self.base, 'signal')
+        self.assertTrue(learner.update(torch.arange(20, dtype=torch.float32)[None, :], 'signal')['optimized'])
+        self.assertEqual(len(calls), 1)
+        self.assertGreater(calls[0], 0)
+        learner.choose(self.x, self.base, 'tie')
+        self.assertFalse(learner.update(torch.ones(1, 20), 'tie')['optimized'])
+        self.assertEqual(len(calls), 1)
+
+    def test_update_coordinator_runs_on_ties_and_controls_global_step(self):
+        calls = []
+        def coordinator(parameters, local_optimized):
+            calls.append(bool(local_optimized))
+            return True if len(calls) == 1 else False
+        learner = OnlineV3Learner(model(), update_coordinator=coordinator)
+        learner.choose(self.x, self.base, 'signal')
+        self.assertTrue(learner.update(torch.arange(20, dtype=torch.float32)[None, :], 'signal')['optimized'])
+        learner.choose(self.x, self.base, 'tie')
+        self.assertFalse(learner.update(torch.ones(1, 20), 'tie')['optimized'])
+        self.assertEqual(calls, [True, False])
+
     def test_matches_existing_exact_group_objective(self):
         self.learner.choose(self.x,self.base,'s')
         _, logits, reference = self.learner.pending
